@@ -1,0 +1,12 @@
+{
+  "name": "coinche",
+  "version": "1.0.0",
+  "description": "Jeu de coinche (sans annonces) en HTML/CSS/JS, contre des robots ou en ligne.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "python3 -m http.server 8080"
+  },
+  "license": "GPL-3.0"
+}

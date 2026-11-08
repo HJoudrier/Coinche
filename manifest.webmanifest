@@ -1,0 +1,15 @@
+{
+  "name": "Coinche",
+  "short_name": "Coinche",
+  "description": "Jeu de coinche sans annonces, contre des robots ou en ligne.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a4a30",
+  "theme_color": "#0a4a30",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

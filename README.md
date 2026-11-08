@@ -11,7 +11,10 @@ L'interface est pensée d'abord pour le téléphone.
   Une enchère à 80 n'est donc jamais remplie grâce à la belote. Au-delà, la belote des preneurs compte pour atteindre le contrat.
 - **Décompte « contrat + points faits »** : réussi = contrat + points faits ; chuté = 160 + contrat pour la défense ;
   coinché/surcoinché = 160 + contrat × multiplicateur pour l'équipe gagnante. La belote (20) reste toujours à l'équipe qui la détient.
-- **Robots** à trois niveaux : facile, moyen (heuristiques et mémoire des cartes) et difficile (simulations Monte-Carlo des donnes possibles).
+- **Robots** à trois niveaux : facile, moyen (heuristiques et mémoire des cartes) et difficile (Monte-Carlo).
+  Le niveau difficile tire jusqu'à 500 donnes possibles par carte (réglable). Les donnes sont tirées selon les déductions : annonces, appels, cartes jouées, singletons probables, obligation de monter.
+  Chaque donne est jouée jusqu'au bout avec l'algorithme des robots. Les cartes nettement moins bonnes sont écartées en cours de route.
+  Le calcul tourne dans un Web Worker : l'écran reste fluide.
 - **Enchères par conventions** : la première annonce montre l'atout. 80 se fait avec le valet ou le 9 et 4 atouts, 90 avec le valet et le 9. Le barrage se fait avec 6 atouts.
   Le partenaire soutient à +10 par carte utile (as, valet ou 9 d'atout ; belote +20), et l'ouvreur annonce ses as au second tour.
   En sans atout et en tout atout, on compte ses levées sûres : 5 = 80, 6 = 90, 7 = 110. Celui qui entame la manche compte en entier sa longue couleur maîtresse.

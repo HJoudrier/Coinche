@@ -6,6 +6,7 @@ import {
   estimateStars, analyze, heuristicPlay, monteCarloPlay, toCtx, auctionForcedCards, auctionLengths,
 } from './ai.js';
 import { describeKnowledge } from './reading.js';
+import { monteCarloAsync } from './mcclient.js';
 import { analyzeBid, explainAuction } from './bidding.js';
 import { actionLabel } from './auction.js';
 
@@ -68,10 +69,22 @@ export function playAdvice(view, level) {
   if (!level || level < 2 || view.phase !== 'playing' || view.turn !== view.seat) return null;
   const ctx = toCtx(view);
   const info = analyze(ctx);
-  const res = level >= 3 ? monteCarloPlay(ctx, { budgetMs: 90, maxSamples: 30 }) : heuristicPlay(ctx, info);
+  const res = heuristicPlay(ctx, info);
   const out = { card: res.card, reason: res.reason, memory: null };
   if (level >= 3) out.memory = memoryInfo(view, info);
   return out;
+}
+
+/** Conseil expert : simulations Monte-Carlo (en arrière-plan) avec le nombre de donnes réglé. */
+export async function playAdviceAsync(view) {
+  const samples = (view.config && view.config.mcSamples) || 500;
+  const res = await monteCarloAsync(toCtx(view), { maxSamples: samples, budgetMs: 3000 });
+  return {
+    card: res.card,
+    reason: res.reason,
+    memory: memoryInfo(view),
+    samples: res.samples || 0,
+  };
 }
 
 /** Mémoire des cartes : atouts restants, cartes maîtresses, couleurs coupées. */

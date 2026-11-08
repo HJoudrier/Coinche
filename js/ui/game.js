@@ -8,7 +8,7 @@ import {
 import { BID_VALUES, bidValueLabel, actionLabel, contractLabel, bidLabel } from '../auction.js';
 import { illegalReason } from '../rules.js';
 import {
-  bidAdvice, playAdvice, auctionMeanings, knowledgeLines,
+  bidAdvice, playAdvice, playAdviceAsync, auctionMeanings, knowledgeLines,
 } from '../advisor.js';
 import { getSettings, onSettingsChange } from '../settings.js';
 import { renderBidText, auctionListEl } from './render.js';
@@ -279,10 +279,21 @@ export class GameView {
         const seq = v.seq;
         setTimeout(() => {
           if (!this.view || this.view.seq !== seq) return;
-          try { this.advice = playAdvice(this.view, getSettings().playHelp); } catch (e) { console.error(e); }
+          const level = getSettings().playHelp;
+          // conseil immédiat de la stratégie, puis (Expert) résultat des simulations
+          try { this.advice = playAdvice(this.view, level); } catch (e) { console.error(e); }
+          if (this.advice && level >= 3) this.advice.thinking = true;
           this.renderHand();
           this.renderHint();
-        }, 60);
+          if (level >= 3) {
+            playAdviceAsync(this.view).then((adv) => {
+              if (!this.view || this.view.seq !== seq || getSettings().playHelp < 3) return;
+              this.advice = adv;
+              this.renderHand();
+              this.renderHint();
+            }).catch((e) => console.error(e));
+          }
+        }, 30);
       }
     } else {
       this.advice = null;
@@ -314,6 +325,10 @@ export class GameView {
       lines.push(h('div', null, '📜 ', h('b', null, v.names[last.seat], ' — ', renderBidText(last.label)), ' : ', renderBidText(last.text)));
     } else if (this.advice && v.phase === 'playing' && v.turn === v.seat) {
       lines.push(h('div', null, '💡 ', h('b', null, cardLabel(this.advice.card)), ' — ', this.advice.reason));
+      if (this.advice.thinking) lines.push(h('div', { class: 'muted small' }, '⏳ Simulation des donnes possibles en cours…'));
+      else if (this.advice.samples && !/donnes simulées/.test(this.advice.reason)) {
+        lines.push(h('div', { class: 'muted small' }, `✓ Confirmé par ${this.advice.samples} donnes simulées`));
+      }
       if (this.advice.memory) for (const m of this.advice.memory) more.push(h('div', { class: 'why' }, m));
     } else if (v.phase === 'playing' && v.turn === v.seat && st.playHelp >= 2) {
       lines.push(h('div', { class: 'muted' }, '💡 Analyse…'));

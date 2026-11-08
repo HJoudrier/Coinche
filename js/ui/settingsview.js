@@ -7,7 +7,7 @@ import { CONVENTION_SUMMARY } from '../bidding.js';
 const AI_DESC = {
   easy: 'Les robots jouent souvent au hasard et annoncent approximativement.',
   medium: 'Les robots suivent les principes classiques et retiennent les cartes jouées.',
-  hard: 'Les robots simulent des centaines de donnes possibles avant de jouer et coinchent à bon escient.',
+  hard: 'Avant chaque carte, les robots simulent jusqu\'à 500 donnes compatibles avec les annonces et le jeu, chacune jouée jusqu\'au bout, et choisissent la carte qui rapporte le plus en moyenne.',
 };
 
 /** @param {{inGame?: boolean, isGuest?: boolean}} ctx */
@@ -33,7 +33,10 @@ export function settingsBody(ctx = {}) {
       segmented(OPTIONS.aiLevel, st.aiLevel, (v) => { updateSettings({ aiLevel: v }); aiDesc.textContent = AI_DESC[v]; }),
       aiDesc, guestNote ? h('div', { class: 'note' }, guestNote) : null),
     field('Score à atteindre', segmented(OPTIONS.targetScore.map(([v]) => [v, String(v)]), st.targetScore, (v) => updateSettings({ targetScore: v })), null, guestNote),
-    field('Vitesse des robots', segmented(OPTIONS.robotSpeed, st.robotSpeed, (v) => updateSettings({ robotSpeed: v })), null, guestNote));
+    field('Vitesse des robots', segmented(OPTIONS.robotSpeed, st.robotSpeed, (v) => updateSettings({ robotSpeed: v })), null, guestNote),
+    field('Simulations du niveau difficile', segmented(OPTIONS.mcSamples, st.mcSamples, (v) => updateSettings({ mcSamples: v }), { small: true }),
+      'Nombre maximal de donnes simulées par carte jouée (et pour l\'aide experte). Les donnes sont tirées selon les annonces et le jeu, puis jouées jusqu\'au bout par l\'algorithme des robots. Plus il y en a, plus le robot est fort et lent (3 s au plus par carte).',
+      guestNote));
 
   const bidDesc = descEl(HELP_DESCRIPTIONS.bid[st.bidHelp]);
   const playDesc = descEl(HELP_DESCRIPTIONS.play[st.playHelp]);

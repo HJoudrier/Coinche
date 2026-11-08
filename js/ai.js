@@ -30,6 +30,8 @@ export const TUNING = {
   followCalls: true, // entamer la couleur appelée par le partenaire
   mcPrior: 10, // Monte-Carlo : avance (en points d'écart moyen) accordée à la carte de la stratégie
   mcPriorTrumpDraw: 25, // … et quand l'équipe preneuse fait tomber les atouts
+  mcSamples: 500, // nombre maximal de donnes simulées par décision (niveau difficile)
+  mcBudgetMs: 3000, // temps maximal de réflexion par décision
 };
 
 /** Petite carte (aucun point) : sert aux appels et contre-appels lors des défausses. */
@@ -110,9 +112,8 @@ export function analyze(ctx) {
   const likely = [0, 1, 2, 3].map(() => new Set());
   const notHave = [0, 1, 2, 3].map(() => new Set());
   // annonces : cartes révélées par les enchères
-  if (ctx.auction && ctx.auction.length) {
-    const leader = ctx.dealer !== undefined && ctx.dealer !== null ? (ctx.dealer + 1) % 4 : null;
-    const kn = auctionKnowledge(ctx.auction, leader);
+  const kn = auctionKn(ctx);
+  if (kn) {
     for (let s = 0; s < 4; s++) {
       if (s === ctx.seat) continue;
       for (const c of knownCards(kn, s, hand)) if (unknownSet.has(c) && !voids[s].has(suitOf(c))) likely[s].add(c);
@@ -129,6 +130,14 @@ export function analyze(ctx) {
   return {
     trump, played, voids, unknown, probVoid, ceil, ceilCard, signals, likely, notHave,
   };
+}
+
+/** Connaissance tirée des enchères (calculée une fois, réutilisée dans les simulations via ctx.kn). */
+export function auctionKn(ctx) {
+  if (ctx.kn !== undefined) return ctx.kn;
+  if (!ctx.auction || !ctx.auction.length) return null;
+  const leader = ctx.dealer !== undefined && ctx.dealer !== null ? (ctx.dealer + 1) % 4 : null;
+  return auctionKnowledge(ctx.auction, leader);
 }
 
 /** Couleur épuisée, sûre ou probable. */
@@ -425,9 +434,8 @@ function quietDiscard(ctx, info, pool) {
  */
 export function auctionForcedCards(ctx, info = analyze(ctx)) {
   const out = {};
-  if (!ctx.auction || !ctx.auction.length) return out;
-  const leader = ctx.dealer !== undefined && ctx.dealer !== null ? (ctx.dealer + 1) % 4 : null;
-  const kn = auctionKnowledge(ctx.auction, leader);
+  const kn = auctionKn(ctx);
+  if (!kn) return out;
   const unknown = new Set(info.unknown);
   for (let s = 0; s < 4; s++) {
     if (s === ctx.seat) continue;
@@ -444,9 +452,8 @@ export function auctionForcedCards(ctx, info = analyze(ctx)) {
  */
 export function auctionLengths(ctx, info = analyze(ctx)) {
   const out = {};
-  if (!ctx.auction || !ctx.auction.length) return out;
-  const leader = ctx.dealer !== undefined && ctx.dealer !== null ? (ctx.dealer + 1) % 4 : null;
-  const kn = auctionKnowledge(ctx.auction, leader);
+  const kn = auctionKn(ctx);
+  if (!kn) return out;
   const playedBy = [0, 1, 2, 3].map(() => ({}));
   const all = ctx.tricks.map((t) => t.cards);
   if (ctx.trick.length) all.push(ctx.trick);
@@ -477,24 +484,59 @@ function lengthsOk(hands, lengths) {
   return true;
 }
 
-function beloteOnly(forced, ctx) {
-  if (!ctx.belote) return {};
-  const tr = ctx.contract.trump;
-  const out = {};
-  for (const c of [`K${tr}`, `Q${tr}`]) if (forced[c] === ctx.belote.seat) out[c] = forced[c];
-  return out;
+/**
+ * Poids relatifs « telle carte cachée est chez tel joueur », d'après toutes les déductions :
+ * annonces (couleur annoncée, as montrés, sans atout / tout atout, passes), appels et contre-appels,
+ * couleurs probablement épuisées. 1 = neutre ; les impossibilités sûres sont traitées à part.
+ */
+export function cardWeights(ctx, info, kn = auctionKn(ctx)) {
+  const W = [0, 1, 2, 3].map(() => new Map());
+  const unknown = new Set(info.unknown);
+  const mul = (s, c, f) => { if (unknown.has(c)) W[s].set(c, (W[s].get(c) ?? 1) * f); };
+  const suitCards = (x) => info.unknown.filter((c) => suitOf(c) === x);
+  for (let s = 0; s < 4; s++) {
+    if (s === ctx.seat) continue;
+    if (kn) {
+      const k = kn[s];
+      for (const x of Object.keys(k.minLen)) for (const c of suitCards(x)) mul(s, c, 1.6);
+      for (const x of Object.keys(k.maxLen)) for (const c of suitCards(x)) mul(s, c, 0.4);
+      if (k.tricks.NT) for (const x of SUITS) { mul(s, `A${x}`, 2.5); mul(s, `T${x}`, 1.5); }
+      if (k.tricks.AT) for (const x of SUITS) { mul(s, `J${x}`, 2.5); mul(s, `9${x}`, 1.5); }
+      if (k.aces) for (const x of SUITS) mul(s, `A${x}`, 1.6);
+      for (const u of k.useful) {
+        for (const x of SUITS) mul(s, `A${x}`, 1.3);
+        if (isColor(u.trump)) { mul(s, `J${u.trump}`, 1.6); mul(s, `9${u.trump}`, 1.6); }
+      }
+      if (k.noOpening) for (const x of SUITS) { mul(s, `J${x}`, 0.75); mul(s, `9${x}`, 0.75); }
+      for (const x of k.noSupport) {
+        for (const y of SUITS) mul(s, `A${y}`, 0.5);
+        if (isColor(x)) { mul(s, `J${x}`, 0.3); mul(s, `9${x}`, 0.3); }
+      }
+    }
+    for (const c of info.likely[s]) mul(s, c, 25); // cartes annoncées, as promis par un appel direct
+    for (const c of info.notHave[s]) mul(s, c, 0.1); // contre-appel : pas l'as
+    for (const x of info.probVoid[s]) if (!info.voids[s].has(x)) for (const c of suitCards(x)) mul(s, c, 0.12);
+  }
+  return W;
 }
 
-function sampleHands(ctx, info, rand, auctionForced = {}, lengths = {}) {
+/**
+ * Tire une répartition des cartes cachées : contraintes sûres respectées (chicanes, plafonds,
+ * belote annoncée), puis chaque carte placée selon les poids de cardWeights.
+ */
+export function sampleHands(ctx, info, rand, weights = null, lengths = {}) {
   const others = [0, 1, 2, 3].filter((s) => s !== ctx.seat);
   const need = {};
   for (const s of others) need[s] = ctx.handCounts[s];
-  const forced = { ...auctionForced };
+  const forced = {};
   if (ctx.belote && ctx.belote.played === 1 && ctx.belote.seat !== ctx.seat) {
     const tr = ctx.contract.trump;
-    for (const c of ['K' + tr, 'Q' + tr]) if (info.unknown.includes(c)) forced[c] = ctx.belote.seat;
+    for (const c of [`K${tr}`, `Q${tr}`]) if (info.unknown.includes(c)) forced[c] = ctx.belote.seat;
   }
+  const w = (s, c) => (weights ? (weights[s].get(c) ?? 1) : 1);
   for (let attempt = 0; attempt < 30; attempt++) {
+    const strict = attempt < 25;
+    const weighted = attempt < 22;
     const hands = { [others[0]]: [], [others[1]]: [], [others[2]]: [] };
     const cap = { ...need };
     let ok = true;
@@ -503,33 +545,27 @@ function sampleHands(ctx, info, rand, auctionForced = {}, lengths = {}) {
       const j = Math.floor(rand() * (i + 1));
       [cards[i], cards[j]] = [cards[j], cards[i]];
     }
-    const useForced = attempt < 20 ? forced : beloteOnly(forced, ctx);
-    const eligible = (c) => {
-      if (useForced[c] !== undefined) return [useForced[c]];
-      const su = suitOf(c);
-      return others.filter((s) => {
-        if (attempt >= 25) return true;
-        if (info.voids[s].has(su)) return false;
-        // obligation de monter non respectée : pas de carte plus forte que le plafond
-        if (info.ceil && info.ceil[s][su] !== undefined && cardStrength(c, info.trump) >= info.ceil[s][su]) return false;
-        if (attempt < 20 && info.notHave && info.notHave[s].has(c)) return false;
-        if (attempt < 12 && info.probVoid && info.probVoid[s].has(su)) return false;
-        return true;
-      });
-    };
-    cards.sort((a, b) => eligible(a).length - eligible(b).length);
+    const elig = new Map();
     for (const c of cards) {
-      const el = eligible(c).filter((s) => cap[s] > 0);
+      if (forced[c] !== undefined) { elig.set(c, [forced[c]]); continue; }
+      const su = suitOf(c);
+      elig.set(c, others.filter((s) => !strict || (!info.voids[s].has(su)
+        && !(info.ceil[s][su] !== undefined && cardStrength(c, info.trump) >= info.ceil[s][su]))));
+    }
+    const maxW = (c) => Math.max(...elig.get(c).map((s) => w(s, c)));
+    cards.sort((a, b) => elig.get(a).length - elig.get(b).length || maxW(b) - maxW(a));
+    for (const c of cards) {
+      const el = elig.get(c).filter((s) => cap[s] > 0);
       if (!el.length) { ok = false; break; }
       let total = 0;
-      for (const s of el) total += cap[s];
+      const ws = el.map((s) => { const v = cap[s] * (weighted ? w(s, c) : 1); total += v; return v; });
       let r = rand() * total;
       let pick = el[el.length - 1];
-      for (const s of el) { r -= cap[s]; if (r < 0) { pick = s; break; } }
+      for (let i = 0; i < el.length; i++) { r -= ws[i]; if (r < 0) { pick = el[i]; break; } }
       hands[pick].push(c);
       cap[pick]--;
     }
-    if (ok && attempt < 20 && !lengthsOk(hands, lengths)) ok = false;
+    if (ok && attempt < 15 && !lengthsOk(hands, lengths)) ok = false;
     if (ok) {
       const res = [];
       for (let s = 0; s < 4; s++) res[s] = s === ctx.seat ? ctx.hand.slice() : hands[s];
@@ -550,8 +586,11 @@ function beloteTeamFor(ctx, hands, played) {
   return null;
 }
 
-/** Joue la manche jusqu'au bout avec la politique heuristique. Renvoie l'écart de score pour `forTeam`. */
-export function rollout(ctx, hands, firstCard, forTeam, beloteTeam) {
+/**
+ * Joue la manche jusqu'au bout : chaque joueur simulé choisit ses cartes avec l'algorithme
+ * complet du robot (règles, mémoire du jeu, lecture des annonces, appels). Renvoie l'écart de score pour `forTeam`.
+ */
+export function rollout(ctx, hands, firstCard, forTeam, beloteTeam, kn = auctionKn(ctx)) {
   const { contract } = ctx;
   const trump = contract.trump;
   const h = hands.map((x) => x.slice());
@@ -579,52 +618,75 @@ export function rollout(ctx, hands, firstCard, forTeam, beloteTeam) {
       turn = (turn + 1) % 4;
     }
     card = heuristicPlay({
-      seat: turn, hand: h[turn], trick, tricks, contract, conv: ctx.conv,
+      seat: turn, hand: h[turn], trick, tricks, contract, conv: ctx.conv, kn, dealer: ctx.dealer,
     }).card;
   }
   const res = scoreRound({ contract, cardPoints: cardPts, tricksBySeat, beloteTeam });
   return res.score[forTeam] - res.score[1 - forTeam];
 }
 
+const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+
+/**
+ * Élimination progressive : une carte est écartée quand, sur les mêmes donnes simulées,
+ * elle fait nettement moins bien que la meilleure (écart moyen + 2,5 erreurs-types < 0).
+ */
+function eliminate(active, vals, baseCard, prior) {
+  const bonus = (c) => (c === baseCard ? prior : 0);
+  const best = active.reduce((a, b) => (mean(vals.get(b)) + bonus(b) > mean(vals.get(a)) + bonus(a) ? b : a));
+  const bv = vals.get(best);
+  return active.filter((c) => {
+    if (c === best) return true;
+    const cv = vals.get(c);
+    const n = Math.min(cv.length, bv.length);
+    const d = [];
+    for (let i = 0; i < n; i++) d.push(cv[i] + bonus(c) - bv[i] - bonus(best));
+    const m = mean(d);
+    const sd = Math.sqrt(d.reduce((x, y) => x + (y - m) ** 2, 0) / Math.max(1, n - 1));
+    return m + 2.5 * (sd / Math.sqrt(n)) >= 0;
+  });
+}
+
+/**
+ * Monte-Carlo : jusqu'à `maxSamples` donnes tirées selon les déductions, chaque carte jouable
+ * évaluée en jouant la fin de la manche avec l'algorithme du robot ; les cartes nettement
+ * inférieures sont éliminées en cours de route.
+ */
 export function monteCarloPlay(ctx, {
-  budgetMs = 140, maxSamples = 60, rand = Math.random, useAuction = true,
+  budgetMs = TUNING.mcBudgetMs, maxSamples = TUNING.mcSamples, minSamples = 40,
+  rand = Math.random, useAuction = true,
 } = {}) {
-  const info = analyze(ctx);
+  const kn = useAuction ? auctionKn(ctx) : null;
+  const ctxK = { ...ctx, kn, auction: useAuction ? ctx.auction : [] };
+  const info = analyze(ctxK);
   const legal = legalCards(ctx.hand, ctx.trick, ctx.contract.trump, ctx.seat);
-  const base = heuristicPlay(ctx, info);
+  const base = heuristicPlay(ctxK, info);
   if (legal.length === 1) return base;
-  const totals = new Map(legal.map((c) => [c, 0]));
+  const weights = cardWeights(ctxK, info, kn);
+  const lengths = useAuction ? auctionLengths(ctxK, info) : {};
+  const myTeam = teamOf(ctx.seat);
+  // prime à la carte de la stratégie : les simulations ne s'en écartent que si l'écart est net
+  const trumpDraw = !ctx.trick.length && isTrumpCard(base.card, ctx.contract.trump) && ctx.contract.team === myTeam;
+  const prior = trumpDraw ? TUNING.mcPriorTrumpDraw : TUNING.mcPrior;
+  const vals = new Map(legal.map((c) => [c, []]));
+  let active = legal.slice();
   const start = now();
   let n = 0;
-  const myTeam = teamOf(ctx.seat);
-  const fromAuction = useAuction ? auctionForcedCards(ctx, info) : {};
-  if (useAuction && info.likely) {
-    // cartes promises par un appel direct (as de la couleur appelée)
-    for (let st = 0; st < 4; st++) for (const c of info.likely[st]) if (fromAuction[c] === undefined) fromAuction[c] = st;
-  }
-  // une déduction contredite par le jeu (plafond d'atout, couleur épuisée) est abandonnée
-  for (const [c, st] of Object.entries(fromAuction)) {
-    const su = suitOf(c);
-    if (info.voids[st].has(su) || (info.ceil[st][su] !== undefined && cardStrength(c, info.trump) >= info.ceil[st][su])) delete fromAuction[c];
-  }
-  const lengths = useAuction ? auctionLengths(ctx, info) : {};
-  while (n < maxSamples && (n < 6 || now() - start < budgetMs)) {
-    const hands = sampleHands(ctx, info, rand, fromAuction, lengths);
+  while (n < maxSamples && active.length > 1 && (n < minSamples || now() - start < budgetMs)) {
+    const hands = sampleHands(ctxK, info, rand, weights, lengths);
     if (!hands) break;
-    const bt = beloteTeamFor(ctx, hands, info.played);
-    for (const c of legal) totals.set(c, totals.get(c) + rollout(ctx, hands, c, myTeam, bt));
+    const bt = beloteTeamFor(ctxK, hands, info.played);
+    for (const c of active) vals.get(c).push(rollout(ctxK, hands, c, myTeam, bt, kn));
     n++;
+    if (n >= minSamples && n % 20 === 0) active = eliminate(active, vals, base.card, prior);
   }
   if (!n) return base;
-  let best = base.card;
-  // prime à la carte de la stratégie : les simulations ne s'en écartent que si l'écart est net
-  const trumpDraw = !ctx.trick.length && isTrumpCard(base.card, ctx.contract.trump) && ctx.contract.team === teamOf(ctx.seat);
-  let bv = totals.get(base.card) + ((trumpDraw ? TUNING.mcPriorTrumpDraw : TUNING.mcPrior) + 1e-6) * n;
-  for (const [c, v] of totals) if (v > bv) { bv = v; best = c; }
+  const score = (c) => mean(vals.get(c)) + (c === base.card ? prior : 0);
+  const best = active.reduce((a, b) => (score(b) > score(a) ? b : a));
   return {
     card: best,
     reason: best === base.card ? base.reason
-      : `Après ${n} simulations de la donne, ${cardLabel(best)} est la carte qui rapporte le plus en moyenne.`,
+      : `Après ${n} donnes simulées (tirées selon les annonces et le jeu), ${cardLabel(best)} est la carte qui rapporte le plus en moyenne.`,
     samples: n,
   };
 }

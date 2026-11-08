@@ -3,6 +3,7 @@
 import { createGame, applyAction, getView, addEvent } from './engine.js';
 import { chooseCard, heuristicPlay, toCtx } from './ai.js';
 import { chooseBid } from './bidding.js';
+import { monteCarloAsync } from './mcclient.js';
 import { ROBOT_DELAYS } from './settings.js';
 
 export function randomId(n = 10) {
@@ -140,6 +141,10 @@ export class GameHost {
     const seat = st.turn;
     const extra = this.lastWasTrick ? delays.trick : 0;
     if (!this.isHuman(seat)) {
+      // robot difficile : la réflexion (Monte-Carlo, en arrière-plan) commence tout de suite
+      if (st.phase === 'playing' && this.levelOf(seat) === 'hard') {
+        this.mc = { seq: st.seq, seat, promise: monteCarloAsync(toCtx(this.viewFor(seat)), this.mcOptions()) };
+      }
       this.timer = setTimeout(() => this.robotAct(seat), Math.max(delays.act, extra + delays.act * 0.4));
       return;
     }
@@ -151,10 +156,29 @@ export class GameHost {
     }
   }
 
+  levelOf(seat) {
+    return this.seats[seat].kind === 'robot' ? this.config.aiLevel : 'medium';
+  }
+
+  mcOptions() {
+    return { maxSamples: this.config.mcSamples || 500, budgetMs: 3000 };
+  }
+
   robotAct(seat) {
     if (this.destroyed || this.state.turn !== seat) return;
     const view = this.viewFor(seat);
-    const level = this.seats[seat].kind === 'robot' ? this.config.aiLevel : 'medium';
+    const level = this.levelOf(seat);
+    if (this.state.phase === 'playing' && level === 'hard') {
+      const seq = this.state.seq;
+      const mc = this.mc && this.mc.seq === seq && this.mc.seat === seat
+        ? this.mc.promise : monteCarloAsync(toCtx(view), this.mcOptions());
+      mc.then((res) => {
+        if (this.destroyed || this.state.seq !== seq || this.state.turn !== seat) return;
+        const r = this.act(seat, { type: 'play', card: res.card });
+        if (!r.ok) this.act(seat, { type: 'play', card: getView(this.state, seat).legal[0] });
+      });
+      return;
+    }
     let action;
     try {
       action = this.state.phase === 'bidding'

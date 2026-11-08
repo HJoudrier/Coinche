@@ -109,3 +109,36 @@ test('on rejoue la couleur appelée par le partenaire', () => {
   assert.equal(r.card, '8S');
   assert.match(r.reason, /appelé à ♠/);
 });
+
+test('tirages Monte-Carlo pondérés par les déductions', async () => {
+  const { sampleHands, cardWeights, monteCarloPlay } = await import('../js/ai.js');
+  const { makeRng } = await import('../js/cards.js');
+  // Sud entame l'as de ♠, Est donne le 10 : Est n'a probablement plus de ♠.
+  // Atout ♥ demandé ensuite : Nord joue le 7 sous le 9 d'Ouest, il n'a donc ni le valet ni le 9.
+  const ctx = base({
+    contract: { seat: 1, team: 1, value: 80, trump: 'H', mult: 1 },
+    hand: ['8S', '7C', '8C', '9C', '7D', '8D'],
+    tricks: [
+      done(0, [[0, 'AS'], [1, 'TS'], [2, '7S'], [3, 'QS']], 0, 24),
+      done(0, [[0, '8H'], [1, 'AH'], [2, '7H'], [3, '9H']], 3, 25),
+    ],
+    handCounts: [6, 6, 6, 6],
+  });
+  const info = analyze(ctx);
+  const W = cardWeights(ctx, info);
+  assert.ok(W[1].get('KS') < 0.2, 'poids réduit pour Est à ♠');
+  const rand = makeRng(9);
+  let eastSpades = 0;
+  let northSpades = 0;
+  for (let i = 0; i < 300; i++) {
+    const hands = sampleHands(ctx, info, rand, W);
+    assert.ok(!hands[2].includes('JH'), 'plafond respecté : Nord n\'a pas le valet d\'atout');
+    eastSpades += hands[1].filter((c) => c[1] === 'S').length;
+    northSpades += hands[2].filter((c) => c[1] === 'S').length;
+  }
+  assert.ok(eastSpades * 4 < northSpades, `Est reçoit rarement du ♠ (${eastSpades} contre ${northSpades})`);
+  // le Monte-Carlo s'arrête au plus tard au nombre de donnes demandé et renvoie une carte jouable
+  const r = monteCarloPlay({ ...ctx, seat: 0 }, { maxSamples: 60, budgetMs: 1e9, rand });
+  assert.ok(ctx.hand.includes(r.card));
+  assert.ok(!r.samples || r.samples <= 60);
+});

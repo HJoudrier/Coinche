@@ -2,7 +2,10 @@
 import {
   TRUMPS, SUITS, SUIT_SYMBOL, teamOf, suitOf, cardStrength, cardLabel,
 } from './cards.js';
-import { estimateStars, analyze, heuristicPlay, monteCarloPlay, toCtx } from './ai.js';
+import {
+  estimateStars, analyze, heuristicPlay, monteCarloPlay, toCtx, auctionForcedCards, auctionLengths,
+} from './ai.js';
+import { describeKnowledge } from './reading.js';
 import { analyzeBid, explainAuction } from './bidding.js';
 import { actionLabel } from './auction.js';
 
@@ -13,13 +16,13 @@ export const HELP_DESCRIPTIONS = {
     'Aucune aide pendant les enchères.',
     'Affiche la force de votre main pour chaque atout (étoiles).',
     'Enchère conseillée selon les conventions, et signification des annonces : touchez une bulle d\'annonce.',
-    'Comme Intermédiaire, avec les significations toujours dépliées et l\'historique des annonces pendant toute la donne.',
+    'Comme Intermédiaire, avec les significations et « ce que l\'on sait des mains » toujours dépliés, et l\'historique des annonces pendant toute la donne.',
   ],
   play: [
     'Aucune aide (les cartes interdites sont tout de même refusées).',
     'Met en évidence les cartes jouables.',
     'Cartes jouables + carte conseillée et sa raison.',
-    'Conseil par simulation, atouts restants, cartes maîtresses et couleurs coupées.',
+    'Conseil par simulation, atouts restants, cartes maîtresses, couleurs coupées et cartes révélées par les enchères.',
   ],
 };
 
@@ -44,10 +47,17 @@ export function bidAdvice(view, level) {
   return res;
 }
 
+const leaderOf = (view) => (view.dealer !== undefined && view.dealer !== null ? (view.dealer + 1) % 4 : null);
+
 /** Signification des annonces de la donne (aide ≥ Intermédiaire). */
 export function auctionMeanings(view) {
-  const leader = view.dealer !== undefined && view.dealer !== null ? (view.dealer + 1) % 4 : null;
-  return explainAuction(view.auction.history, view.names, leader);
+  return explainAuction(view.auction.history, view.names, leaderOf(view));
+}
+
+/** Ce que les annonces révèlent des trois autres mains, croisé avec la nôtre. */
+export function knowledgeLines(view) {
+  if (!view.auction || !view.auction.history.length) return [];
+  return describeKnowledge(view.auction.history, view.names, leaderOf(view), view.seat, view.hand);
 }
 
 /**
@@ -86,6 +96,20 @@ export function memoryInfo(view, info = analyze(toCtx(view))) {
     voids.push(`${view.names[s]} : plus de ${[...info.voids[s]].map((x) => SUIT_SYMBOL[x]).join('')}`);
   }
   if (voids.length) lines.push(voids.join(' · '));
+  // déductions des enchères encore valables (cartes non jouées, longueurs restantes)
+  const ctx = toCtx(view);
+  const forced = auctionForcedCards(ctx, info);
+  const bySeat = {};
+  for (const [c, s] of Object.entries(forced)) (bySeat[s] ||= []).push(cardLabel(c));
+  const lens = auctionLengths(ctx, info);
+  const deductions = [];
+  for (let s = 0; s < 4; s++) {
+    const parts = [];
+    if (bySeat[s]) parts.push(`a encore ${bySeat[s].join(', ')}`);
+    for (const [x, { min }] of Object.entries(lens[s] || {})) if (min > 0) parts.push(`au moins ${min} ${SUIT_SYMBOL[x]}`);
+    if (parts.length) deductions.push(`${view.names[s]} ${parts.join(', ')}`);
+  }
+  if (deductions.length) lines.push(`D'après les annonces : ${deductions.join(' · ')}`);
   const us = teamOf(view.seat);
   lines.push(`Points faits : nous ${view.cardPoints[us]} · eux ${view.cardPoints[1 - us]}`);
   return lines;

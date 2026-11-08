@@ -13,6 +13,9 @@ import {
 } from './cards.js';
 import { CAPOT, GENERALE, bidLabel } from './auction.js';
 import { evaluateHand, defenseScore } from './ai.js';
+import {
+  explainAuction, auctionKnowledge, knownCards, opponentSuits,
+} from './reading.js';
 
 const isColor = (t) => SUITS.includes(t);
 const S = (t) => SUIT_SYMBOL[t];
@@ -71,6 +74,31 @@ export function noTrumpValue(tricks) {
   if (tricks >= 5) return 80;
   return null;
 }
+
+/**
+ * Levées sûres de l'équipe en sans atout / tout atout, en ajoutant aux nôtres les cartes que le
+ * partenaire a montrées pendant les enchères (valet/9 d'une couleur annoncée, as du second tour…).
+ */
+export function teamNoTrumpTricks(hand, T, leads, partnerCards, partnerKn = null) {
+  const mine = sureTricksNT(hand, T, leads);
+  let total = 0;
+  for (const s of SUITS) {
+    const myPart = mine.parts.find((p) => p.suit === s);
+    let k = 0;
+    for (const r of NT_ORDER[T]) {
+      const c = r + s;
+      if (hand.includes(c) || partnerCards.has(c)) k++; else break;
+    }
+    total += Math.max(myPart ? myPart.count : 0, k);
+  }
+  if (T === 'NT' && partnerKn && partnerKn.aces) {
+    const knownAces = SUITS.filter((s) => hand.includes(`A${s}`) || partnerCards.has(`A${s}`)).length;
+    total += Math.max(0, Math.min(partnerKn.aces, 4 - knownAces));
+  }
+  return { total, mine: mine.total, partner: total - mine.total };
+}
+
+const cardWord = (c) => `${RANK_WORD[c[0]]} ${S(c[1])}`;
 
 /**
  * Valeur d'ouverture d'une main pour un atout, selon la convention, ou null.
@@ -191,6 +219,14 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
   const pname = names ? names[partner] : 'votre partenaire';
   // Le premier à parler entame aussi la première levée.
   const leads = view.dealer !== undefined && view.dealer !== null && (view.dealer + 1) % 4 === seat;
+  // Lecture des annonces : ce que le partenaire et les adversaires ont montré, croisé avec notre main
+  const leader = view.dealer !== undefined && view.dealer !== null ? (view.dealer + 1) % 4 : null;
+  const kn = auctionKnowledge(auction.history, leader);
+  const partnerCards = knownCards(kn, partner, hand);
+  const oppSuits = opponentSuits(kn, seat);
+  const teamCards = new Set([...hand, ...partnerCards]);
+  // sans atout / tout atout : il faut un arrêt (as / valet) dans chaque couleur annoncée par l'adversaire
+  const stopperMissing = (T) => [...oppSuits].find((x) => !teamCards.has((T === 'NT' ? 'A' : 'J') + x)) || null;
 
   // Phase de surcoinche
   if (auction.mult > 1) {
@@ -214,7 +250,8 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
   const candidates = [];
 
   // 1) Soutien du partenaire (une seule fois par couleur)
-  if (partnerLast && !myBids.some((b) => b.trump === partnerLast.trump)) {
+  if (partnerLast && !myBids.some((b) => b.trump === partnerLast.trump)
+    && !(myBids.length && !isColor(partnerLast.trump))) {
     const T = partnerLast.trump;
     const sup = usefulCards(hand, T);
     if (sup.points >= 10) {
@@ -225,6 +262,27 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
         trump: T,
         why: `${pname} a annoncé ${base} ${S(T)} ; vous avez ${sup.notes.join(', ')} : +${sup.points} (10 par carte utile, belote 20) → ${base + sup.points} ${S(T)}.`,
       });
+    }
+  }
+
+  // 1 bis) Le partenaire a montré un valet (ou le 9 dont nous avons le valet) et nous avons les autres :
+  // avec les 4 valets dans l'équipe, le tout atout rapporte plus que la couleur du partenaire (simulations).
+  if (partnerLast && isColor(partnerLast.trump) && !myBids.some((b) => b.trump === 'AT') && !stopperMissing('AT')) {
+    const myJacks = SUITS.filter((x) => hand.includes(`J${x}`));
+    const teamJacks = SUITS.filter((x) => teamCards.has(`J${x}`));
+    if (teamJacks.length === 4 && myJacks.length >= 2) {
+      const tt = teamNoTrumpTricks(hand, 'AT', leads, partnerCards, kn[partner]);
+      const v0 = tt.total >= 8 ? 120 : tt.total >= 6 ? 110 : 100;
+      const value = Math.max(v0, required);
+      if (value <= v0 + 10) {
+        const shown = [...partnerCards].filter((c) => c[0] === 'J' || c[0] === '9').map(cardWord);
+        candidates.push({
+          prio: 4,
+          value,
+          trump: 'AT',
+          why: `${pname} a montré ${shown.join(' et ')} et vous avez ${myJacks.map((x) => `le valet ${S(x)}`).join(', ')} : l'équipe tient les 4 valets (${tt.total} levées sûres). Le tout atout rapporte plus que la couleur → ${value} TA.`,
+        });
+      }
     }
   }
 
@@ -256,6 +314,10 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
     for (const T of TRUMPS) {
       const op = openingValue(hand, T, { loose: lastChance || (level === 'easy' && rand() < 0.5), leads });
       if (!op) continue;
+      // pas de sans atout / tout atout sans arrêt dans la couleur adverse
+      if (!isColor(T) && stopperMissing(T)) continue;
+      // la couleur annoncée par l'adversaire : il en tient le valet ou le 9
+      if (isColor(T) && oppSuits.has(T) && !(hand.includes(`J${T}`) && hand.includes(`9${T}`))) continue;
       let prio = 1;
       let prefix = '';
       if (partnerLast && T !== partnerLast.trump) {
@@ -291,6 +353,27 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
     }
   }
 
+  // Coinche envisagée (en tenant compte de ce que les annonces adverses prétendent)
+  let coinche = null;
+  if (options.coinche && current && level !== 'easy' && current.value < CAPOT) {
+    const T = current.trump;
+    let d = defenseScore(hand, T, current.value);
+    let reason = `vous avez de la longueur ou les gros atouts à ${S(T)}`;
+    const myJacks = SUITS.filter((x) => hand.includes(`J${x}`)).length;
+    const myAces = SUITS.filter((x) => hand.includes(`A${x}`)).length;
+    if (T === 'AT' && myJacks >= 2) { d += 2; reason = `ils comptent sur leurs valets mais vous en avez ${myJacks}`; }
+    if (T === 'NT' && myAces >= 2) { d += 2; reason = `ils comptent sur leurs as mais vous en avez ${myAces}`; }
+    if (isColor(T) && hand.includes(`J${T}`) && hand.includes(`9${T}`)) {
+      d += 1;
+      reason = `ils annoncent ${S(T)} mais c'est vous qui avez le valet et le 9`;
+    }
+    if (level === 'hard' && current.value - shownValue(hist, teamOf(current.seat), T) >= 20) d += 0.5;
+    if (d >= (level === 'hard' ? 4.7 : 5)) {
+      coinche = out({ type: 'coinche' },
+        `Les adversaires annoncent ${current.value} ${S(T)}, mais ${reason} : coinchez.`);
+    }
+  }
+
   // Plafond / capot, puis choix
   for (const c of candidates) {
     if (c.value > 160 && !c.capotSure) {
@@ -301,18 +384,15 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
   if (legal.length) {
     legal.sort((a, b) => b.prio - a.prio || b.value - a.value);
     const best = legal[0];
+    // une simple surenchère dans sa couleur vaut moins qu'une bonne coinche
+    if (coinche && best.prio <= 1) {
+      return { ...coinche, explanation: coinche.explanation.replace(/\.$/, ', plutôt que de surenchérir.') };
+    }
     return out({ type: 'bid', value: best.value, trump: best.trump }, best.why);
   }
 
-  // 4) Coincher les adversaires ?
-  if (options.coinche && current && level !== 'easy' && current.value < CAPOT) {
-    let d = defenseScore(hand, current.trump, current.value);
-    if (level === 'hard' && current.value - shownValue(hist, teamOf(current.seat), current.trump) >= 20) d += 0.5;
-    if (d >= (level === 'hard' ? 4.7 : 5)) {
-      return out({ type: 'coinche' },
-        `Les adversaires annoncent ${current.value} ${S(current.trump)} mais vous avez de la longueur ou les gros atouts à ${S(current.trump)} : coinchez.`);
-    }
-  }
+  // 4) Coincher les adversaires (si l'on n'a pas mieux à annoncer)
+  if (coinche) return coinche;
 
   // 5) Passer, avec la raison
   let explanation = 'Aucune couleur avec le valet ou le 9 bien accompagné : passez.';
@@ -335,89 +415,7 @@ export function chooseBid(view, level = 'medium', rand = Math.random) {
   return analyzeBid(view, level, rand).action;
 }
 
-// ---------------------------------------------------------------------------
-// Lecture des annonces (informations publiques uniquement)
-// ---------------------------------------------------------------------------
-function openingMeaning(v, T, leads = false) {
-  if (T === 'NT' || T === 'AT') {
-    const n = v >= CAPOT ? 8 : v >= 110 ? 7 : v >= 90 ? 6 : 5;
-    const what = T === 'NT' ? 'as, 10, roi…' : 'valet, 9, as…';
-    return `${T === 'NT' ? 'sans atout' : 'tout atout'} : au moins ${n} levées sûres (cartes maîtresses : ${what})${leads ? ' ; il entame, sa longue couleur maîtresse compte en entier' : ''}`;
-  }
-  if (v === CAPOT) return `capot : compte faire tous les plis à ${S(T)}`;
-  if (v === GENERALE) return `générale : compte faire seul tous les plis à ${S(T)}`;
-  if (v <= 80) return `valet ou 9 de ${S(T)} avec au moins 4 atouts (ou valet et 9 avec 3 atouts)`;
-  if (v === 90) return `valet et 9 de ${S(T)}, au moins 4 atouts`;
-  if (v === 100) return `valet, 9 et as de ${S(T)} (4 atouts), ou valet et 9 avec 5 atouts`;
-  if (v <= 130) return `barrage : au moins 6 atouts à ${S(T)} avec le valet${v >= 120 ? ' et le 9' : ''}`;
-  return `jeu exceptionnel à ${S(T)}`;
-}
-
-/**
- * Signification de chaque annonce selon la convention.
- * Retourne un tableau parallèle à `history` : {seat, type, label, text}.
- */
-export function explainAuction(history, names, leader = null) {
-  const res = [];
-  let current = null;
-  const seatBids = [[], [], [], []];
-  for (const e of history) {
-    const s = e.seat;
-    const t = teamOf(s);
-    const p = partnerOf(s);
-    let text;
-    if (e.type === 'pass') {
-      const pBid = seatBids[p][seatBids[p].length - 1];
-      if (pBid && !seatBids[s].some((b) => b.trump === pBid.trump)) {
-        text = `rien pour soutenir ${names[p]} à ${S(pBid.trump)} (ni as, ni valet ou 9 d'atout)`;
-      } else if (!seatBids[s].length) {
-        text = current
-          ? `pas de couleur assez forte pour dépasser ${current.value}`
-          : 'pas de couleur avec le valet ou le 9 bien accompagné';
-      } else text = 'plus rien à montrer';
-    } else if (e.type === 'coinche') {
-      text = current ? `pense que ${names[current.seat]} et son partenaire chuteront à ${bidLabel(current.value, current.trump)}` : 'coinche';
-    } else if (e.type === 'surcoinche') {
-      text = 'certain de réussir le contrat malgré la coinche';
-    } else {
-      const T = e.trump;
-      const v = e.value;
-      const forced = current && teamOf(current.seat) !== t;
-      const pBidsT = seatBids[p].filter((b) => b.trump === T);
-      const mineT = seatBids[s].filter((b) => b.trump === T);
-      let teamLastT = null;
-      for (const b of [...seatBids[s], ...seatBids[p]]) if (b.trump === T && (!teamLastT || b.order > teamLastT.order)) teamLastT = b;
-      const pLast = seatBids[p][seatBids[p].length - 1];
-      if (pBidsT.length && !mineT.length) {
-        const raise = v - teamLastT.value;
-        const k = Math.round(raise / 10);
-        text = `soutien de ${names[p]} : +${raise} = ${plural(k, 'carte')} utile${k > 1 ? 's' : ''} (as, valet ou 9 d'atout ; belote = +20)${forced ? ', en concurrence' : ''}`;
-      } else if (mineT.length) {
-        const raise = v - teamLastT.value;
-        const opened = seatBids[s][0] && seatBids[s][0].trump === T
-          && !(seatBids[p].some((b) => b.trump === T && b.order < seatBids[s][0].order));
-        text = opened && mineT.length === 1
-          ? `second tour : +${raise} = ses as (${Math.round(raise / 10)} × 10, belote = +20)`
-          : `remonte à ${v} en concurrence`;
-      } else if (pLast && pLast.trump !== T) {
-        text = `nouvelle couleur : peu de ${S(pLast.trump)}, mais ${openingMeaning(Math.max(90, forced ? v - 10 : v), T, s === leader)}`;
-      } else if (!current && res.length === 3 && res.every((r) => r.type === 'pass') && v === 80) {
-        text = `ouverture en dernière position : valet de ${S(T)} avec 3 atouts, ou 9 avec 4 atouts`;
-      } else if (forced && v === current.value + 10) {
-        text = `surenchère : ${openingMeaning(Math.min(v - 10, 100), T, s === leader)}, ou mieux${v > 90 && SUITS.includes(T) ? ' (as compris)' : ''}`;
-      } else {
-        text = openingMeaning(v, T, s === leader);
-      }
-      const entry = { trump: T, value: v, order: res.length };
-      seatBids[s].push(entry);
-      current = { seat: s, value: v, trump: T };
-    }
-    const label = e.type === 'bid' ? bidLabel(e.value, e.trump)
-      : e.type === 'pass' ? 'Passe' : e.type === 'coinche' ? 'Coinche' : 'Surcoinche';
-    res.push({ seat: s, type: e.type, label, text: text.charAt(0).toUpperCase() + text.slice(1) });
-  }
-  return res;
-}
+export { explainAuction };
 
 export const CONVENTION_SUMMARY = [
   ['80', 'Valet ou 9 d\'atout (l\'un des deux manque) avec au moins 4 atouts, ou valet et 9 avec seulement 3 atouts. Les as ne comptent pas dans la première annonce.'],
@@ -430,7 +428,10 @@ export const CONVENTION_SUMMARY = [
   ['Nouvelle couleur', 'Peu de cartes dans la couleur du partenaire mais une couleur très forte (valet et 9, ou 6 atouts).'],
   ['4e position', 'Après trois « passe », on peut ouvrir à 80 plus légèrement : le valet avec 3 atouts, ou le 9 avec 4 atouts.'],
   ['SA / TA', 'On compte ses levées sûres, c\'est-à-dire ses cartes maîtresses (as, 10, roi… en sans atout ; valet, 9, as… en tout atout) : 5 levées = 80, 6 = 90, 7 = 110, 8 = capot. Celui qui parle en premier entame la manche : sa longue couleur maîtresse compte alors en entier, car il garde la main et encaisse toute la couleur.'],
-  ['Coinche', 'Longueur à l\'atout adverse avec le valet ou le 9 : le contrat adverse a de bonnes chances de chuter.'],
+  ['TA avec le partenaire', 'Si le partenaire a montré un valet (90 = valet et 9) et que l\'on tient les autres valets, l\'équipe a les 4 valets : on part à tout atout, qui rapporte alors plus que la couleur du partenaire.'],
+  ['Arrêts', 'Pas de sans atout sans l\'as, ni de tout atout sans le valet, dans une couleur annoncée par l\'adversaire. On n\'annonce pas non plus la couleur de l\'adversaire, sauf avec son valet et son 9.'],
+  ['Coinche', 'Longueur à l\'atout adverse avec le valet ou le 9. Contre un tout atout, 2 valets ; contre un sans atout, 2 as : leurs annonces sont alors démenties par votre main.'],
+  ['Lecture', 'Chaque annonce révèle des cartes : 90 ♥ = valet et 9 de ♥ ; 80 ♥ = l\'un des deux (si vous tenez le valet, il a le 9). Les robots s\'en servent pour enchérir et pour jouer la carte.'],
 ];
 
 export { SUIT_NAME };

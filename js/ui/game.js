@@ -7,7 +7,9 @@ import {
 } from '../cards.js';
 import { BID_VALUES, bidValueLabel, actionLabel, contractLabel, bidLabel } from '../auction.js';
 import { illegalReason } from '../rules.js';
-import { bidAdvice, playAdvice, auctionMeanings } from '../advisor.js';
+import {
+  bidAdvice, playAdvice, auctionMeanings, knowledgeLines,
+} from '../advisor.js';
 import { getSettings, onSettingsChange } from '../settings.js';
 
 const REL = ['bottom', 'right', 'top', 'left'];
@@ -317,6 +319,11 @@ export class GameView {
       for (const m of auctionMeanings(v)) {
         more.push(h('div', { class: 'why meaning' }, h('b', null, v.names[m.seat], ' — ', renderBidText(m.label)), ' : ', renderBidText(m.text)));
       }
+      const know = knowledgeLines(v).filter((l) => !/rien de connu$/.test(l.text));
+      if (know.length) {
+        more.push(h('div', { class: 'more-title' }, 'Ce que l\'on sait des mains'));
+        for (const l of know) more.push(h('div', { class: 'why meaning' }, renderBidText(l.text)));
+      }
     }
     if (!lines.length) { el.classList.remove('show'); return; }
     el.classList.add('show');
@@ -547,10 +554,14 @@ export class GameView {
         h('div', { class: 'al-text' }, renderBidText(m.text))));
     }
     const c = v.contract;
+    const know = knowledgeLines(v);
     const md = openModal([
       h('h3', null, 'Annonces de la donne'),
       c ? h('p', { class: 'muted small' }, 'Contrat : ', renderBidText(`${contractLabel(c)} (${v.names[c.seat]})`)) : null,
       list,
+      know.length ? h('div', { class: 'knowledge' },
+        h('div', { class: 'more-title' }, 'Ce que l\'on sait des mains'),
+        know.map((l) => h('div', { class: 'al-text' }, renderBidText(l.text)))) : null,
       h('button', { class: 'btn', onClick: () => md.close() }, 'Fermer'),
     ]);
   }

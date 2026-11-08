@@ -7,6 +7,7 @@ import {
 } from './cards.js';
 import { legalCards, trickWinnerSeat, trickPoints } from './rules.js';
 import { scoreRound } from './scoring.js';
+import { auctionKnowledge, knownCards } from './reading.js';
 
 export const LEVELS = ['easy', 'medium', 'hard'];
 const isColor = (t) => SUITS.includes(t);
@@ -241,11 +242,78 @@ function leadCard(ctx, legal, info) {
 // ---------------------------------------------------------------------------
 // Monte-Carlo (niveau difficile)
 // ---------------------------------------------------------------------------
-function sampleHands(ctx, info, rand) {
+/**
+ * Cartes encore cachées dont on connaît le détenteur grâce aux enchères
+ * (ex. 90 ♥ annoncé = valet et 9 de ♥). Ignore les déductions contredites par le jeu.
+ * Retourne {carte: siège}.
+ */
+export function auctionForcedCards(ctx, info = analyze(ctx)) {
+  const out = {};
+  if (!ctx.auction || !ctx.auction.length) return out;
+  const leader = ctx.dealer !== undefined && ctx.dealer !== null ? (ctx.dealer + 1) % 4 : null;
+  const kn = auctionKnowledge(ctx.auction, leader);
+  const unknown = new Set(info.unknown);
+  for (let s = 0; s < 4; s++) {
+    if (s === ctx.seat) continue;
+    const cards = [...knownCards(kn, s, ctx.hand)].filter((c) => unknown.has(c) && !info.voids[s].has(suitOf(c)));
+    if (ctx.handCounts && cards.length > ctx.handCounts[s]) continue;
+    for (const c of cards) out[c] = s;
+  }
+  return out;
+}
+
+/**
+ * Longueurs annoncées encore à respecter dans les mains cachées : {siège: {couleur: {min, max}}},
+ * corrigées des cartes déjà jouées par ce joueur.
+ */
+export function auctionLengths(ctx, info = analyze(ctx)) {
+  const out = {};
+  if (!ctx.auction || !ctx.auction.length) return out;
+  const leader = ctx.dealer !== undefined && ctx.dealer !== null ? (ctx.dealer + 1) % 4 : null;
+  const kn = auctionKnowledge(ctx.auction, leader);
+  const playedBy = [0, 1, 2, 3].map(() => ({}));
+  const all = ctx.tricks.map((t) => t.cards);
+  if (ctx.trick.length) all.push(ctx.trick);
+  for (const tc of all) for (const { seat, card } of tc) playedBy[seat][suitOf(card)] = (playedBy[seat][suitOf(card)] || 0) + 1;
+  for (let s = 0; s < 4; s++) {
+    if (s === ctx.seat) continue;
+    const req = {};
+    for (const [x, n] of Object.entries(kn[s].minLen)) {
+      const left = n - (playedBy[s][x] || 0);
+      if (left > 0 && !info.voids[s].has(x)) req[x] = { min: left, max: 8 };
+    }
+    for (const [x, n] of Object.entries(kn[s].maxLen)) {
+      const left = Math.max(0, n - (playedBy[s][x] || 0));
+      req[x] = { min: req[x] ? req[x].min : 0, max: left };
+    }
+    if (Object.keys(req).length) out[s] = req;
+  }
+  return out;
+}
+
+function lengthsOk(hands, lengths) {
+  for (const [s, req] of Object.entries(lengths)) {
+    for (const [x, { min, max }] of Object.entries(req)) {
+      const n = hands[s].filter((c) => suitOf(c) === x).length;
+      if (n < min || n > max) return false;
+    }
+  }
+  return true;
+}
+
+function beloteOnly(forced, ctx) {
+  if (!ctx.belote) return {};
+  const tr = ctx.contract.trump;
+  const out = {};
+  for (const c of [`K${tr}`, `Q${tr}`]) if (forced[c] === ctx.belote.seat) out[c] = forced[c];
+  return out;
+}
+
+function sampleHands(ctx, info, rand, auctionForced = {}, lengths = {}) {
   const others = [0, 1, 2, 3].filter((s) => s !== ctx.seat);
   const need = {};
   for (const s of others) need[s] = ctx.handCounts[s];
-  const forced = {};
+  const forced = { ...auctionForced };
   if (ctx.belote && ctx.belote.played === 1 && ctx.belote.seat !== ctx.seat) {
     const tr = ctx.contract.trump;
     for (const c of ['K' + tr, 'Q' + tr]) if (info.unknown.includes(c)) forced[c] = ctx.belote.seat;
@@ -259,7 +327,8 @@ function sampleHands(ctx, info, rand) {
       const j = Math.floor(rand() * (i + 1));
       [cards[i], cards[j]] = [cards[j], cards[i]];
     }
-    const eligible = (c) => (forced[c] !== undefined ? [forced[c]]
+    const useForced = attempt < 20 ? forced : beloteOnly(forced, ctx);
+    const eligible = (c) => (useForced[c] !== undefined ? [useForced[c]]
       : others.filter((s) => attempt < 25 ? !info.voids[s].has(suitOf(c)) : true));
     cards.sort((a, b) => eligible(a).length - eligible(b).length);
     for (const c of cards) {
@@ -273,6 +342,7 @@ function sampleHands(ctx, info, rand) {
       hands[pick].push(c);
       cap[pick]--;
     }
+    if (ok && attempt < 20 && !lengthsOk(hands, lengths)) ok = false;
     if (ok) {
       const res = [];
       for (let s = 0; s < 4; s++) res[s] = s === ctx.seat ? ctx.hand.slice() : hands[s];
@@ -327,7 +397,9 @@ export function rollout(ctx, hands, firstCard, forTeam, beloteTeam) {
   return res.score[forTeam] - res.score[1 - forTeam];
 }
 
-export function monteCarloPlay(ctx, { budgetMs = 140, maxSamples = 60, rand = Math.random } = {}) {
+export function monteCarloPlay(ctx, {
+  budgetMs = 140, maxSamples = 60, rand = Math.random, useAuction = true,
+} = {}) {
   const info = analyze(ctx);
   const legal = legalCards(ctx.hand, ctx.trick, ctx.contract.trump, ctx.seat);
   const base = heuristicPlay(ctx, info);
@@ -336,8 +408,10 @@ export function monteCarloPlay(ctx, { budgetMs = 140, maxSamples = 60, rand = Ma
   const start = now();
   let n = 0;
   const myTeam = teamOf(ctx.seat);
+  const fromAuction = useAuction ? auctionForcedCards(ctx, info) : {};
+  const lengths = useAuction ? auctionLengths(ctx, info) : {};
   while (n < maxSamples && (n < 6 || now() - start < budgetMs)) {
-    const hands = sampleHands(ctx, info, rand);
+    const hands = sampleHands(ctx, info, rand, fromAuction, lengths);
     if (!hands) break;
     const bt = beloteTeamFor(ctx, hands, info.played);
     for (const c of legal) totals.set(c, totals.get(c) + rollout(ctx, hands, c, myTeam, bt));
@@ -377,6 +451,8 @@ export function toCtx(view) {
     contract: view.contract,
     belote: view.belote,
     handCounts: view.handCounts,
+    auction: view.auction ? view.auction.history : [],
+    dealer: view.dealer,
   };
 }
 

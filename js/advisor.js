@@ -46,7 +46,8 @@ export function bidAdvice(view, level) {
 
 /** Signification des annonces de la donne (aide ≥ Intermédiaire). */
 export function auctionMeanings(view) {
-  return explainAuction(view.auction.history, view.names);
+  const leader = view.dealer !== undefined && view.dealer !== null ? (view.dealer + 1) % 4 : null;
+  return explainAuction(view.auction.history, view.names, leader);
 }
 
 /**

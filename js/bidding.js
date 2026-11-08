@@ -30,18 +30,62 @@ export function trumpProfile(hand, T) {
   };
 }
 
+// Ordre des cartes maîtresses en sans atout et en tout atout.
+const NT_ORDER = { NT: ['A', 'T', 'K', 'Q', 'J', '9', '8', '7'], AT: ['J', '9', 'A', 'T', 'K', 'Q', '8', '7'] };
+const RANK_WORD = { A: 'as', T: '10', K: 'roi', Q: 'dame', J: 'valet', 9: '9', 8: '8', 7: '7' };
+
+/**
+ * Levées sûres en sans atout / tout atout : les cartes maîtresses en tête de chaque couleur.
+ * Si l'on entame la manche (`leads`), une longue couleur dont les maîtresses suffisent à faire
+ * tomber celles des adversaires compte en entier : on garde la main et on encaisse toute la couleur.
+ */
+export function sureTricksNT(hand, T, leads = false) {
+  const parts = [];
+  let total = 0;
+  let longIgnored = null;
+  for (const s of SUITS) {
+    const n = hand.filter((c) => suitOf(c) === s).length;
+    if (!n) continue;
+    let k = 0;
+    for (const r of NT_ORDER[T]) { if (hand.includes(r + s)) k++; else break; }
+    const solid = k >= Math.min(n, 8 - n) && n > k;
+    const count = solid && leads ? n : k;
+    if (solid && !leads && n >= 4) longIgnored = s;
+    if (count) parts.push({ suit: s, n, k, count, long: solid && leads });
+    total += count;
+  }
+  return { total, parts, longIgnored };
+}
+
+function describeTricks(st, T) {
+  return st.parts.map((p) => (p.long
+    ? `longue ${S(p.suit)} maîtresse (${p.n} levées)`
+    : `${NT_ORDER[T].slice(0, p.k).map((r) => RANK_WORD[r]).join(', ')} ${S(p.suit)}`)).join(' ; ');
+}
+
+/** Valeur d'une annonce sans atout / tout atout selon le nombre de levées sûres. */
+export function noTrumpValue(tricks) {
+  if (tricks >= 8) return CAPOT;
+  if (tricks >= 7) return 110;
+  if (tricks >= 6) return 90;
+  if (tricks >= 5) return 80;
+  return null;
+}
+
 /**
  * Valeur d'ouverture d'une main pour un atout, selon la convention, ou null.
  * Retourne {value, kind, text} ; text est rédigé à la 2e personne pour les conseils.
+ * `leads` : le joueur entame la première levée (il parle en premier).
  */
-export function openingValue(hand, T, { loose = false } = {}) {
-  if (T === 'NT') {
-    const aces = SUITS.filter((s) => hand.includes(`A${s}`)).length;
-    return aces === 4 ? { value: 110, kind: 'SA', text: 'vous avez les 4 as' } : null;
-  }
-  if (T === 'AT') {
-    const jacks = SUITS.filter((s) => hand.includes(`J${s}`)).length;
-    return jacks === 4 ? { value: 110, kind: 'TA', text: 'vous avez les 4 valets' } : null;
+export function openingValue(hand, T, { loose = false, leads = false } = {}) {
+  if (T === 'NT' || T === 'AT') {
+    const st = sureTricksNT(hand, T, leads);
+    const value = noTrumpValue(st.total);
+    if (!value) return null;
+    const name = T === 'NT' ? 'sans atout' : 'tout atout';
+    let text = `${leads ? 'vous entamez la manche et ' : ''}vous avez ${st.total} levées sûres en ${name} (${describeTricks(st, T)})`;
+    if (st.longIgnored) text += `. Votre longue ${S(st.longIgnored)} ne compte pas en entier car vous n'entamez pas`;
+    return { value, kind: T === 'NT' ? 'SA' : 'TA', text, tricks: st.total };
   }
   const p = trumpProfile(hand, T);
   if (p.J && p.n >= 6) {
@@ -145,6 +189,8 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
   for (const t of TRUMPS) estimates[t] = evaluateHand(hand, t);
   const out = (action, explanation) => ({ action, estimates, explanation });
   const pname = names ? names[partner] : 'votre partenaire';
+  // Le premier à parler entame aussi la première levée.
+  const leads = view.dealer !== undefined && view.dealer !== null && (view.dealer + 1) % 4 === seat;
 
   // Phase de surcoinche
   if (auction.mult > 1) {
@@ -190,7 +236,7 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
     const firstInT = hist.find((h) => h.type === 'bid' && teamOf(h.seat) === myTeam && h.trump === T);
     const iOpened = firstInT && firstInT.seat === seat;
     if (iOpened && mine.length === 1) {
-      const op = openingValue(hand, T, { loose: true });
+      const op = openingValue(hand, T, { loose: true, leads });
       const show = acesToShow(hand, T, op ? op.kind : 'V');
       if (show.points >= 10) {
         candidates.push({
@@ -208,7 +254,7 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
   const lastChance = !current && hist.length === 3 && hist.every((h) => h.type === 'pass');
   if (!myBids.length) {
     for (const T of TRUMPS) {
-      const op = openingValue(hand, T, { loose: lastChance || (level === 'easy' && rand() < 0.5) });
+      const op = openingValue(hand, T, { loose: lastChance || (level === 'easy' && rand() < 0.5), leads });
       if (!op) continue;
       let prio = 1;
       let prefix = '';
@@ -229,7 +275,7 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
       }
       const opening = !current;
       let why;
-      if (op.kind === 'SA' || op.kind === 'TA') why = `${op.text} : annoncez ${bidLabel(value, T)}.`;
+      if (op.kind === 'SA' || op.kind === 'TA') why = `${op.text} : ${over(value)}annoncez ${bidLabel(value, T)}.`;
       else if (op.kind === 'barrage') why = `${op.text} : barrage à ${value} ${S(T)} pour gêner les adversaires.`;
       else if (lastChance && value === 80) {
         why = `${op.text} : les trois autres ont passé, vous pouvez ouvrir plus léger à 80 ${S(T)} en dernière position.`;
@@ -239,13 +285,15 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
         why = `${op.text}, plus ${compete.notes.join(' et ')} : en concurrence, comptez aussi vos as → ${over(value)}${value} ${S(T)}.`;
       } else why = `${op.text} : ${over(value)}${value} ${S(T)}.`;
       why = (prefix ? prefix : '') + why;
-      candidates.push({ prio, value, trump: T, why: why.charAt(0).toUpperCase() + why.slice(1), kind: op.kind });
+      candidates.push({
+        prio, value, trump: T, why: why.charAt(0).toUpperCase() + why.slice(1), kind: op.kind, capotSure: op.value === CAPOT,
+      });
     }
   }
 
   // Plafond / capot, puis choix
   for (const c of candidates) {
-    if (c.value > 160) {
+    if (c.value > 160 && !c.capotSure) {
       if (estimates[c.trump].sureTricks >= 7) { c.value = CAPOT; c.why += ' Assez de levées sûres : capot !'; } else c.value = 160;
     }
   }
@@ -275,7 +323,7 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
       ? 'Vous avez déjà montré votre jeu : passez.'
       : `Votre équipe a déjà montré tout son jeu : pas de quoi dépasser ${current ? current.value : ''} ${current ? S(current.trump) : ''}.`;
   } else if (current) {
-    const best = TRUMPS.map((t) => openingValue(hand, t)).filter(Boolean).sort((a, b) => b.value - a.value)[0];
+    const best = TRUMPS.map((t) => openingValue(hand, t, { leads })).filter(Boolean).sort((a, b) => b.value - a.value)[0];
     explanation = best
       ? `${best.text.charAt(0).toUpperCase() + best.text.slice(1)}, mais cela ne suffit pas pour dépasser ${current.value} : passez.`
       : `Pas de couleur à annoncer au-dessus de ${current.value} : passez.`;
@@ -290,9 +338,12 @@ export function chooseBid(view, level = 'medium', rand = Math.random) {
 // ---------------------------------------------------------------------------
 // Lecture des annonces (informations publiques uniquement)
 // ---------------------------------------------------------------------------
-function openingMeaning(v, T) {
-  if (T === 'NT') return 'sans atout : les 4 as';
-  if (T === 'AT') return 'tout atout : les 4 valets';
+function openingMeaning(v, T, leads = false) {
+  if (T === 'NT' || T === 'AT') {
+    const n = v >= CAPOT ? 8 : v >= 110 ? 7 : v >= 90 ? 6 : 5;
+    const what = T === 'NT' ? 'as, 10, roi…' : 'valet, 9, as…';
+    return `${T === 'NT' ? 'sans atout' : 'tout atout'} : au moins ${n} levées sûres (cartes maîtresses : ${what})${leads ? ' ; il entame, sa longue couleur maîtresse compte en entier' : ''}`;
+  }
   if (v === CAPOT) return `capot : compte faire tous les plis à ${S(T)}`;
   if (v === GENERALE) return `générale : compte faire seul tous les plis à ${S(T)}`;
   if (v <= 80) return `valet ou 9 de ${S(T)} avec au moins 4 atouts (ou valet et 9 avec 3 atouts)`;
@@ -306,7 +357,7 @@ function openingMeaning(v, T) {
  * Signification de chaque annonce selon la convention.
  * Retourne un tableau parallèle à `history` : {seat, type, label, text}.
  */
-export function explainAuction(history, names) {
+export function explainAuction(history, names, leader = null) {
   const res = [];
   let current = null;
   const seatBids = [[], [], [], []];
@@ -349,13 +400,13 @@ export function explainAuction(history, names) {
           ? `second tour : +${raise} = ses as (${Math.round(raise / 10)} × 10, belote = +20)`
           : `remonte à ${v} en concurrence`;
       } else if (pLast && pLast.trump !== T) {
-        text = `nouvelle couleur : peu de ${S(pLast.trump)}, mais ${openingMeaning(Math.max(90, forced ? v - 10 : v), T)}`;
+        text = `nouvelle couleur : peu de ${S(pLast.trump)}, mais ${openingMeaning(Math.max(90, forced ? v - 10 : v), T, s === leader)}`;
       } else if (!current && res.length === 3 && res.every((r) => r.type === 'pass') && v === 80) {
         text = `ouverture en dernière position : valet de ${S(T)} avec 3 atouts, ou 9 avec 4 atouts`;
       } else if (forced && v === current.value + 10) {
-        text = `surenchère : ${openingMeaning(Math.min(v - 10, 100), T)}, ou mieux${v > 90 ? ' (as compris)' : ''}`;
+        text = `surenchère : ${openingMeaning(Math.min(v - 10, 100), T, s === leader)}, ou mieux${v > 90 && SUITS.includes(T) ? ' (as compris)' : ''}`;
       } else {
-        text = openingMeaning(v, T);
+        text = openingMeaning(v, T, s === leader);
       }
       const entry = { trump: T, value: v, order: res.length };
       seatBids[s].push(entry);
@@ -378,7 +429,7 @@ export const CONVENTION_SUMMARY = [
   ['Concurrence', 'Pour dépasser une enchère adverse, on peut monter de 10 au-dessus de sa valeur d\'ouverture, et compter aussi ses as (+10 chacun).'],
   ['Nouvelle couleur', 'Peu de cartes dans la couleur du partenaire mais une couleur très forte (valet et 9, ou 6 atouts).'],
   ['4e position', 'Après trois « passe », on peut ouvrir à 80 plus légèrement : le valet avec 3 atouts, ou le 9 avec 4 atouts.'],
-  ['SA / TA', 'Seulement avec les 4 as (sans atout) ou les 4 valets (tout atout).'],
+  ['SA / TA', 'On compte ses levées sûres, c\'est-à-dire ses cartes maîtresses (as, 10, roi… en sans atout ; valet, 9, as… en tout atout) : 5 levées = 80, 6 = 90, 7 = 110, 8 = capot. Celui qui parle en premier entame la manche : sa longue couleur maîtresse compte alors en entier, car il garde la main et encaisse toute la couleur.'],
   ['Coinche', 'Longueur à l\'atout adverse avec le valet ou le 9 : le contrat adverse a de bonnes chances de chuter.'],
 ];
 

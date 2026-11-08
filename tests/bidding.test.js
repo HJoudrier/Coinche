@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { newAuction, applyAuction, auctionOptions } from '../js/auction.js';
-import { analyzeBid, chooseBid, explainAuction, openingValue } from '../js/bidding.js';
+import { analyzeBid, chooseBid, explainAuction, openingValue, sureTricksNT } from '../js/bidding.js';
 
 const NAMES = ['Sud', 'Est', 'Nord', 'Ouest'];
 
@@ -10,7 +10,7 @@ function viewFor(hand, seat, actions = [], dealer = 3) {
   const a = newAuction(dealer);
   for (const [s, act] of actions) applyAuction(a, s, act);
   assert.equal(a.turn, seat, 'ce doit être au tour du siège testé');
-  return { hand, seat, auction: a, options: auctionOptions(a, seat), names: NAMES };
+  return { hand, seat, dealer, auction: a, options: auctionOptions(a, seat), names: NAMES };
 }
 const bid = (value, trump) => ({ type: 'bid', value, trump });
 const pass = { type: 'pass' };
@@ -111,4 +111,31 @@ test('signification des annonces', () => {
   ], NAMES);
   assert.match(ex2[1].text, /Surenchère : valet ou 9 de ♥/);
   assert.match(ex2[3].text, /Rien pour soutenir Nord/);
+});
+
+test('sans atout : une longue couleur maîtresse compte en entier si l\'on entame', () => {
+  const hand = ['AS', 'TS', 'KS', 'QS', '8S', '7S', '7H', '8D'];
+  assert.equal(sureTricksNT(hand, 'NT', true).total, 6);
+  assert.equal(sureTricksNT(hand, 'NT', false).total, 4);
+  // Sud parle en premier (donneur Ouest) : il entame → 90 SA
+  const a = analyzeBid(viewFor(hand, 0, [], 3));
+  assert.deepEqual(a.action, bid(90, 'NT'));
+  assert.match(a.explanation, /entamez/);
+  // Sud parle en dernier : il n'entame pas, la longue ne compte que pour ses 4 maîtresses → passe
+  const a2 = analyzeBid(viewFor(hand, 0, [[1, pass], [2, pass], [3, pass]], 0));
+  assert.deepEqual(a2.action, pass);
+});
+
+test('tout atout avec beaucoup de cartes maîtresses', () => {
+  const hand = ['JC', '9C', 'AC', 'TC', 'JD', '9D', 'JH', '7S'];
+  assert.equal(sureTricksNT(hand, 'AT', false).total, 7);
+  assert.deepEqual(chooseBid(viewFor(hand, 0, [], 3)), bid(110, 'AT'));
+});
+
+test('signification d\'un sans atout annoncé par celui qui entame', () => {
+  const ex = explainAuction([{ seat: 0, type: 'bid', value: 90, trump: 'NT' }], NAMES, 0);
+  assert.match(ex[0].text, /6 levées sûres/);
+  assert.match(ex[0].text, /entame/);
+  const ex2 = explainAuction([{ seat: 1, type: 'bid', value: 80, trump: 'AT' }], NAMES, 0);
+  assert.doesNotMatch(ex2[0].text, /entame/);
 });

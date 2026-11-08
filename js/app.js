@@ -465,6 +465,7 @@ function openGameMenu() {
   m = openModal([
     h('div', { class: 'menu-list' },
       item('🃏 Dernier pli', () => session.game.showLastTrick()),
+      getSettings().bidHelp >= 3 ? item('📜 Annonces de la donne', () => session.game.showAuction()) : null,
       item('📊 Statistiques', () => openStats(v)),
       item('💡 Aides', openHelpQuick),
       item('⚙️ Paramètres', () => openSettings()),

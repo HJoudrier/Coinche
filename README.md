@@ -12,6 +12,9 @@ L'interface est pensée d'abord pour le téléphone.
 - **Décompte « contrat + points faits »** : réussi = contrat + points faits ; chuté = 160 + contrat pour la défense ;
   coinché/surcoinché = 160 + contrat × multiplicateur pour l'équipe gagnante. La belote (20) reste toujours à l'équipe qui la détient.
 - **Robots** à trois niveaux : facile, moyen (heuristiques et mémoire des cartes) et difficile (simulations Monte-Carlo des donnes possibles).
+- **Enchères par conventions** : la première annonce montre l'atout. 80 se fait avec le valet ou le 9 et 4 atouts, 90 avec le valet et le 9. Le barrage se fait avec 6 atouts.
+  Le partenaire soutient à +10 par carte utile (as, valet ou 9 d'atout ; belote +20), et l'ouvreur annonce ses as au second tour.
+  À partir de l'aide « Intermédiaire », toucher une bulle d'annonce en donne la signification.
 - **Partie en ligne** : chaque place peut être tenue par un robot ou réservée à un invité. L'invité scanne le QR code ou saisit le code de la partie.
   Il peut se reconnecter à sa place, et un robot joue pour lui pendant une déconnexion.
 - **Aides réglables**, de « aucune » à « expert », séparément pour les enchères et pour le jeu :

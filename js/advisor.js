@@ -1,9 +1,10 @@
 // Aides au joueur : conseils d'enchères et de jeu, de niveau variable.
 import {
-  TRUMPS, SUITS, SUIT_SYMBOL, SUIT_NAME, partnerOf, teamOf, suitOf, cardStrength, cardLabel,
+  TRUMPS, SUITS, SUIT_SYMBOL, teamOf, suitOf, cardStrength, cardLabel,
 } from './cards.js';
-import { analyzeBid, estimateStars, analyze, heuristicPlay, monteCarloPlay, toCtx } from './ai.js';
-import { actionLabel, CAPOT } from './auction.js';
+import { estimateStars, analyze, heuristicPlay, monteCarloPlay, toCtx } from './ai.js';
+import { analyzeBid, explainAuction } from './bidding.js';
+import { actionLabel } from './auction.js';
 
 export const HELP_LEVELS = ['Aucune', 'Débutant', 'Intermédiaire', 'Expert'];
 
@@ -11,8 +12,8 @@ export const HELP_DESCRIPTIONS = {
   bid: [
     'Aucune aide pendant les enchères.',
     'Affiche la force de votre main pour chaque atout (étoiles).',
-    'Force de la main + enchère conseillée.',
-    'Conseil détaillé, points espérés et lecture des annonces des autres joueurs.',
+    'Enchère conseillée selon les conventions, et signification des annonces : touchez une bulle d\'annonce.',
+    'Comme Intermédiaire, avec les significations toujours dépliées et l\'historique des annonces pendant toute la donne.',
   ],
   play: [
     'Aucune aide (les cartes interdites sont tout de même refusées).',
@@ -23,8 +24,8 @@ export const HELP_DESCRIPTIONS = {
 };
 
 /**
- * Conseil d'enchère. level : 1..3.
- * Retourne {stars:[{trump, stars, points}], action, label, explanation, reading:[...]}.
+ * Conseil d'enchère (pendant son tour). level : 1..3.
+ * Retourne {stars:[{trump, stars, points}], action, label, explanation}.
  */
 export function bidAdvice(view, level) {
   if (!level || !view.options) return null;
@@ -34,43 +35,18 @@ export function bidAdvice(view, level) {
     const total = e.points + (e.belote ? 20 : 0);
     return { trump: t, stars: estimateStars(total), points: Math.min(total, 182) };
   });
-  const res = { stars, action: null, label: '', explanation: '', reading: [] };
+  const res = { stars, action: null, label: '', explanation: '' };
   if (level >= 2) {
     res.action = a.action;
     res.label = actionLabel(a.action);
-  }
-  if (level >= 3) {
     res.explanation = a.explanation;
-    res.reading = readAuction(view);
   }
   return res;
 }
 
-function readAuction(view) {
-  const { seat, auction, names } = view;
-  const partner = partnerOf(seat);
-  const out = [];
-  const last = {};
-  for (const h of auction.history) if (h.type === 'bid') last[h.seat] = h;
-  if (last[partner]) {
-    const b = last[partner];
-    if (b.value >= CAPOT) out.push(`${names[partner]} vise le ${b.value === CAPOT ? 'capot' : 'générale'} : soutenez-le sans surenchérir.`);
-    else {
-      out.push(SUITS.includes(b.trump)
-        ? `${names[partner]} (partenaire) annonce ${b.value} ${SUIT_SYMBOL[b.trump]} : il a sans doute le valet ou le 9 à ${SUIT_NAME[b.trump]}. Vos as et vos atouts maîtres lui permettent de monter.`
-        : `${names[partner]} (partenaire) annonce ${b.value} ${SUIT_NAME[b.trump]} : ${b.trump === 'NT' ? 'il compte sur ses as' : 'il compte sur ses valets'}.`);
-    }
-  }
-  for (const s of [(seat + 1) % 4, (seat + 3) % 4]) {
-    if (last[s]) {
-      const b = last[s];
-      out.push(`${names[s]} (adversaire) annonce ${b.value} ${SUIT_SYMBOL[b.trump]}${SUITS.includes(b.trump) ? ` : ses atouts sont forts à ${SUIT_NAME[b.trump]}` : ''}.`);
-    }
-  }
-  if (auction.current && teamOf(auction.current.seat) !== teamOf(seat)) {
-    out.push('Pour coincher, il faut de la longueur à l\'atout adverse (3-4 cartes) avec le valet ou le 9.');
-  }
-  return out;
+/** Signification des annonces de la donne (aide ≥ Intermédiaire). */
+export function auctionMeanings(view) {
+  return explainAuction(view.auction.history, view.names);
 }
 
 /**

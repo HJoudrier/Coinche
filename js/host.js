@@ -1,7 +1,8 @@
 // Hôte de partie : fait tourner le moteur, pilote les robots et les timers,
 // et diffuse à chaque joueur (local ou distant) sa propre vue.
 import { createGame, applyAction, getView, addEvent } from './engine.js';
-import { chooseBid, chooseCard, heuristicPlay, toCtx } from './ai.js';
+import { chooseCard, heuristicPlay, toCtx } from './ai.js';
+import { chooseBid } from './bidding.js';
 import { ROBOT_DELAYS } from './settings.js';
 
 export function randomId(n = 10) {

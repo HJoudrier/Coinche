@@ -1,18 +1,17 @@
-// Intelligence artificielle : enchères et jeu de la carte, 3 niveaux.
+// Intelligence artificielle : jeu de la carte (3 niveaux) et évaluation des mains.
+// Les enchères par conventions sont dans bidding.js.
 // L'IA ne voit que la « vue » d'un joueur (sa main + les informations publiques).
 import {
-  SUITS, TRUMPS, ALL_CARDS, SUIT_SYMBOL, SUIT_NAME, RANK_LABEL,
+  SUITS, ALL_CARDS, SUIT_SYMBOL,
   suitOf, rankOf, cardPoints, cardStrength, teamOf, partnerOf, cardLabel,
 } from './cards.js';
 import { legalCards, trickWinnerSeat, trickPoints } from './rules.js';
 import { scoreRound } from './scoring.js';
-import { BID_VALUES, CAPOT } from './auction.js';
 
 export const LEVELS = ['easy', 'medium', 'hard'];
 const isColor = (t) => SUITS.includes(t);
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const isTrumpCard = (c, trump) => isColor(trump) && suitOf(c) === trump;
-const floor10 = (x) => Math.floor(x / 10) * 10;
 
 // ---------------------------------------------------------------------------
 // Connaissance : cartes jouées, cartes inconnues, chicanes observées.
@@ -474,34 +473,6 @@ export function evaluateHand(hand, trump) {
 // points espérés ≈ a + b × évaluation brute (régression sur des parties simulées)
 const CALIBRATION = { color: [51.3, 0.595], NT: [62.4, 0.493], AT: [55.6, 0.554] };
 
-/** Points que notre main apporte à l'enchère du partenaire. */
-export function supportPoints(hand, trump) {
-  const has = (r, s) => hand.includes(r + s);
-  let p = 0;
-  const notes = [];
-  if (isColor(trump)) {
-    const n = hand.filter((c) => suitOf(c) === trump).length;
-    if (has('J', trump)) { p += 20; notes.push(`valet ${SUIT_SYMBOL[trump]}`); }
-    if (has('9', trump) && (n >= 2 || has('J', trump))) { p += 10; notes.push(`9 ${SUIT_SYMBOL[trump]}`); }
-    if (n >= 3) p += 5;
-    let aces = 0;
-    for (const s of SUITS) if (s !== trump && has('A', s)) { p += 10; aces++; }
-    if (aces) notes.push(`${aces} as`);
-    if (has('K', trump) && has('Q', trump)) { p += 20; notes.push('belote'); }
-  } else if (trump === 'NT') {
-    for (const s of SUITS) {
-      if (has('A', s)) { p += 20; notes.push(`A${SUIT_SYMBOL[s]}`); }
-      if (has('A', s) && has('T', s)) p += 10;
-    }
-  } else {
-    for (const s of SUITS) {
-      if (has('J', s)) { p += 20; notes.push(`V${SUIT_SYMBOL[s]}`); }
-      if (has('J', s) && has('9', s)) p += 10;
-    }
-  }
-  return { points: p, notes };
-}
-
 /**
  * Force défensive contre un contrat adverse (calibrée sur des parties simulées) :
  * la longueur d'atout et la possession du valet / du 9 sont les meilleurs indicateurs de chute.
@@ -524,146 +495,6 @@ export function defenseScore(hand, trump, value = 80) {
   return sc;
 }
 
-function quickSimulate(hand, seat, trump, rand, samples) {
-  const unknown = ALL_CARDS.filter((c) => !hand.includes(c));
-  let total = 0;
-  const contract = { seat, team: teamOf(seat), value: 80, trump, mult: 1 };
-  for (let i = 0; i < samples; i++) {
-    const deck = unknown.slice();
-    for (let j = deck.length - 1; j > 0; j--) {
-      const k = Math.floor(rand() * (j + 1));
-      [deck[j], deck[k]] = [deck[k], deck[j]];
-    }
-    const hands = [];
-    let p = 0;
-    for (let s = 0; s < 4; s++) {
-      if (s === seat) hands[s] = hand.slice();
-      else { hands[s] = deck.slice(p, p + 8); p += 8; }
-    }
-    // l'adversaire à droite du preneur entame (approximation)
-    const leader = (seat + 1) % 4;
-    let turn = leader;
-    const h = hands.map((x) => x.slice());
-    let trick = [];
-    const tricks = [];
-    const pts = [0, 0];
-    while (tricks.length < 8) {
-      const card = heuristicPlay({ seat: turn, hand: h[turn], trick, tricks, contract }).card;
-      h[turn].splice(h[turn].indexOf(card), 1);
-      trick.push({ seat: turn, card });
-      if (trick.length === 4) {
-        const w = trickWinnerSeat(trick, trump);
-        const v = trickPoints(trick, trump) + (tricks.length === 7 ? 10 : 0);
-        pts[teamOf(w)] += v;
-        tricks.push({ leader: trick[0].seat, cards: trick, winner: w, points: v });
-        trick = [];
-        turn = w;
-      } else turn = (turn + 1) % 4;
-    }
-    total += pts[teamOf(seat)];
-  }
-  return total / samples;
-}
-
-/**
- * Analyse d'enchère : renvoie {action, estimates, explanation}.
- * view : vue du moteur en phase d'enchères.
- */
-export function analyzeBid(view, level = 'medium', rand = Math.random) {
-  const { hand, seat, auction, options } = view;
-  const partner = partnerOf(seat);
-  const myTeam = teamOf(seat);
-  const current = auction.current;
-  const estimates = {};
-  for (const t of TRUMPS) estimates[t] = evaluateHand(hand, t);
-
-  if (level === 'hard') {
-    const ranked = TRUMPS.slice().sort((a, b) => estimates[b].points - estimates[a].points).slice(0, 2);
-    for (const t of ranked) {
-      const sim = quickSimulate(hand, seat, t, rand, 10);
-      estimates[t].sim = Math.round(sim);
-      estimates[t].points = Math.round((estimates[t].points + sim) / 2);
-    }
-  }
-
-  const noise = level === 'easy' ? Math.round((rand() - 0.5) * 30) : 0;
-  const margin = level === 'easy' ? 8 : level === 'hard' ? 10 : 12;
-  const total = (t) => estimates[t].points + (estimates[t].belote ? 20 : 0) + noise;
-  const iBid = (t) => auction.history.some((h) => h.seat === seat && h.type === 'bid' && h.trump === t);
-
-  // Phase de surcoinche
-  if (auction.mult > 1) {
-    if (options.surcoinche && level !== 'easy') {
-      const t = current.trump;
-      if (total(t) >= current.value + 30) {
-        return { action: { type: 'surcoinche' }, estimates, explanation: 'Votre jeu est très solide : surcoinchez !' };
-      }
-    }
-    return { action: { type: 'pass' }, estimates, explanation: 'Laissez la coinche.' };
-  }
-
-  const candidates = [];
-  // 1) Soutenir le partenaire : son annonce + l'écart de notre main par rapport à une main moyenne
-  const partnerBid = [...auction.history].reverse().find((h) => h.seat === partner && h.type === 'bid');
-  if (partnerBid && !iBid(partnerBid.trump)) {
-    const t = partnerBid.trump;
-    const sup = supportPoints(hand, t);
-    const combined = partnerBid.value + 12 + (total(t) - 81);
-    const value = Math.min(floor10(combined - margin), 160);
-    if (value > partnerBid.value) {
-      candidates.push({
-        value,
-        trump: t,
-        support: true,
-        why: `Votre partenaire a annoncé ${partnerBid.value} ${SUIT_SYMBOL[t]} et vous l'aidez${sup.notes.length ? ` (${sup.notes.join(', ')})` : ''} : montez à ${value}.`,
-      });
-    }
-  }
-  // 2) Sa propre couleur
-  for (const t of TRUMPS) {
-    if (partnerBid && t === partnerBid.trump) continue;
-    const ev = estimates[t];
-    let v = total(t) - margin;
-    if (ev.sureTricks >= 8 && level !== 'easy') v = CAPOT;
-    const value = v >= CAPOT ? CAPOT : Math.min(floor10(v), 160);
-    if (value >= 80) {
-      candidates.push({
-        value,
-        trump: t,
-        why: `${ev.notes.join(', ') || 'jeu correct'} : environ ${Math.min(ev.points, 162)} points espérés${ev.belote ? ' + belote' : ''} à ${SUIT_NAME[t]}.`,
-      });
-    }
-  }
-  const partnerHolds = current && current.seat === partner;
-  const legalCands = candidates.filter((c) => options.values.includes(c.value)
-    && !(partnerHolds && c.trump !== current.trump && c.value < current.value + 30));
-  if (legalCands.length) {
-    const best = legalCands.reduce((a, b) => (b.value + (b.support ? 5 : 0) > a.value + (a.support ? 5 : 0) ? b : a));
-    return { action: { type: 'bid', value: best.value, trump: best.trump }, estimates, explanation: best.why };
-  }
-
-  // 3) Coincher les adversaires ?
-  if (options.coinche && current && level !== 'easy' && current.value < CAPOT) {
-    const d = defenseScore(hand, current.trump, current.value);
-    if (d >= (level === 'hard' ? 4.7 : 5)) {
-      return {
-        action: { type: 'coinche' },
-        estimates,
-        explanation: `Les adversaires annoncent ${current.value} ${SUIT_SYMBOL[current.trump]} mais vous avez une forte défense : coinchez.`,
-      };
-    }
-  }
-
-  let explanation = 'Votre jeu est trop faible pour annoncer : passez.';
-  if (current && teamOf(current.seat) === myTeam) explanation = 'Votre partenaire tient le contrat et vous n\'avez pas de quoi monter : passez.';
-  else if (current) explanation = `Pas assez pour dépasser ${current.value} : passez.`;
-  return { action: { type: 'pass' }, estimates, explanation };
-}
-
-export function chooseBid(view, level = 'medium', rand = Math.random) {
-  return analyzeBid(view, level, rand).action;
-}
-
 export function estimateStars(points) {
   if (points < 80) return 0;
   if (points < 90) return 1;
@@ -673,4 +504,3 @@ export function estimateStars(points) {
   return 5;
 }
 
-export { BID_VALUES, RANK_LABEL };

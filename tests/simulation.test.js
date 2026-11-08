@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGame, applyAction, getView } from '../js/engine.js';
-import { chooseBid, chooseCard } from '../js/ai.js';
+import { chooseCard } from '../js/ai.js';
+import { chooseBid } from '../js/bidding.js';
 import { makeRng } from '../js/cards.js';
 
 /** Joue une partie complète entre robots. levels[seat] = niveau. */

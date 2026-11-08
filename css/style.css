@@ -282,6 +282,23 @@ ul.plain { list-style: none; padding: 0; }
 .bubble.belote { background: #7e57c2; color: #fff; }
 .bubble.timeout { background: #333; color: #fff; }
 .bubble.contract { background: var(--accent); color: var(--accent-ink); }
+.bubble.tappable { cursor: pointer; padding-right: 22px; }
+.bubble .info-dot {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.18); font-size: 9px; line-height: 13px; text-align: center; font-weight: 800; font-style: italic;
+}
+.hint .more-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 4px 0 2px; }
+.hint .meaning { margin-bottom: 2px; }
+.hint .meaning b { color: var(--text); font-weight: 700; }
+.auction-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.al-item { background: var(--panel-2); border-radius: 10px; padding: 8px 10px; border-left: 4px solid var(--them); }
+.al-item.us { border-left-color: var(--us); }
+.al-item.pass { opacity: 0.75; }
+.al-head { display: flex; justify-content: space-between; gap: 8px; }
+.al-bid { font-weight: 800; }
+.al-text { font-size: 0.86rem; color: var(--text-2); }
+.tbl.conventions td { text-align: left; vertical-align: top; }
+.tbl.conventions td:first-child { width: 26%; padding-right: 10px; }
 .seat.top .bubble { top: calc(100% + 2px); left: 50%; transform: translateX(-50%); }
 .seat.left .bubble { top: calc(100% + 2px); left: 6px; }
 .seat.right .bubble { top: calc(100% + 2px); right: 6px; }
@@ -322,7 +339,7 @@ ul.plain { list-style: none; padding: 0; }
 .hint.show { display: block; }
 .hint .why { color: var(--text-2); font-size: 0.82rem; }
 .hint .more { display: none; margin-top: 4px; }
-.hint .more.open { display: block; }
+.hint .more.open { display: block; max-height: 28vh; overflow-y: auto; overscroll-behavior: contain; }
 .hint .toggle { color: var(--muted); font-size: 0.75rem; margin-top: 2px; }
 .stars-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 2px; }
 .st-item { display: inline-flex; align-items: center; gap: 3px; font-size: 0.85rem; }

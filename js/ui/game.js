@@ -7,7 +7,7 @@ import {
 } from '../cards.js';
 import { BID_VALUES, bidValueLabel, actionLabel, contractLabel, bidLabel } from '../auction.js';
 import { illegalReason } from '../rules.js';
-import { bidAdvice, playAdvice } from '../advisor.js';
+import { bidAdvice, playAdvice, auctionMeanings } from '../advisor.js';
 import { getSettings, onSettingsChange } from '../settings.js';
 
 const REL = ['bottom', 'right', 'top', 'left'];
@@ -39,7 +39,7 @@ export class GameView {
     this.collectedSeq = null;
     this.lastEventId = null;
     this.tempBubbles = [null, null, null, null];
-    this.hintOpen = false;
+    this.hintOpen = null; // null = selon le niveau d'aide
     this.roundModal = null;
     this.gameOverNotified = null;
     this.timerRaf = null;
@@ -61,13 +61,13 @@ export class GameView {
       this.scoreEl,
       this.contractEl);
 
-    this.seats = REL.map((pos) => {
+    this.seats = REL.map((pos, rel) => {
       const ring = h('i', { class: 'ring' });
       const initial = h('span', { class: 'initial' });
       const avatar = h('div', { class: 'avatar' }, initial, ring);
       const name = h('div', { class: 'name' });
       const badges = h('div', { class: 'badges' });
-      const bubble = h('div', { class: 'bubble' });
+      const bubble = h('div', { class: 'bubble', onClick: () => this.explainSeat(rel) });
       const el = h('div', { class: `seat ${pos}` }, avatar, name, badges, bubble);
       return { el, avatar, initial, ring, name, badges, bubble };
     });
@@ -75,7 +75,15 @@ export class GameView {
     this.table = h('div', { class: 'table' }, this.trickEl, ...this.seats.map((s) => s.el));
 
     this.myTimer = h('div', { class: 'mytimer' }, h('i'));
-    this.hintEl = h('div', { class: 'hint', onClick: () => { this.hintOpen = !this.hintOpen; this.renderHint(); } });
+    this.hintEl = h('div', {
+      class: 'hint',
+      onClick: () => {
+        const v = this.view;
+        const cur = this.hintOpen ?? (v && v.phase === 'bidding' && getSettings().bidHelp >= 3);
+        this.hintOpen = !cur;
+        this.renderHint();
+      },
+    });
     this.handEl = h('div', { class: 'hand' });
     this.bidEl = h('div', { class: 'bidpanel' });
     return h('div', { class: 'game' }, top, this.table, this.myTimer, this.hintEl, this.handEl, this.bidEl);
@@ -191,9 +199,11 @@ export class GameView {
         text = actionLabel(lastBid[s]);
         cls = lastBid[s].type;
       }
-      seat.bubble.className = `bubble ${text ? 'show' : ''} ${cls}`;
+      const tappable = text && lastBid[s] && !tb && getSettings().bidHelp >= 2;
+      seat.bubble.className = `bubble ${text ? 'show' : ''} ${cls} ${tappable ? 'tappable' : ''}`;
       clear(seat.bubble);
       if (text) seat.bubble.append(renderBidText(text));
+      if (tappable) seat.bubble.append(h('span', { class: 'info-dot', 'aria-hidden': 'true' }, 'i'));
     }
   }
 
@@ -291,20 +301,30 @@ export class GameView {
       }
       lines.push(stars);
       if (a.label) lines.push(h('div', null, '💡 Conseil : ', h('b', null, renderBidText(a.label))));
-      if (a.explanation) lines.push(h('div', { class: 'why' }, a.explanation));
-      for (const r of a.reading) more.push(h('div', { class: 'why' }, r));
+      if (a.explanation) lines.push(h('div', { class: 'why' }, renderBidText(a.explanation)));
+    } else if (v.phase === 'bidding' && st.bidHelp >= 2 && v.auction.history.length) {
+      const m = auctionMeanings(v);
+      const last = m[m.length - 1];
+      lines.push(h('div', null, '📜 ', h('b', null, v.names[last.seat], ' — ', renderBidText(last.label)), ' : ', renderBidText(last.text)));
     } else if (this.advice && v.phase === 'playing' && v.turn === v.seat) {
       lines.push(h('div', null, '💡 ', h('b', null, cardLabel(this.advice.card)), ' — ', this.advice.reason));
       if (this.advice.memory) for (const m of this.advice.memory) more.push(h('div', { class: 'why' }, m));
     } else if (v.phase === 'playing' && v.turn === v.seat && st.playHelp >= 2) {
       lines.push(h('div', { class: 'muted' }, '💡 Analyse…'));
     }
+    if (v.phase === 'bidding' && st.bidHelp >= 2 && v.auction.history.length) {
+      more.push(h('div', { class: 'more-title' }, 'Signification des annonces'));
+      for (const m of auctionMeanings(v)) {
+        more.push(h('div', { class: 'why meaning' }, h('b', null, v.names[m.seat], ' — ', renderBidText(m.label)), ' : ', renderBidText(m.text)));
+      }
+    }
     if (!lines.length) { el.classList.remove('show'); return; }
     el.classList.add('show');
     append(el, lines);
     if (more.length) {
-      el.append(h('div', { class: `more ${this.hintOpen ? 'open' : ''}` }, more));
-      el.append(h('div', { class: 'toggle' }, this.hintOpen ? '▲ moins' : '▼ plus de détails'));
+      const open = this.hintOpen ?? (v.phase === 'bidding' && st.bidHelp >= 3);
+      el.append(h('div', { class: `more ${open ? 'open' : ''}` }, more));
+      el.append(h('div', { class: 'toggle' }, open ? '▲ moins' : '▼ plus de détails'));
     }
   }
 
@@ -499,6 +519,39 @@ export class GameView {
       iAmWaited
         ? h('button', { class: 'btn primary', onClick: () => this.o.send({ type: 'ready' }) }, 'Manche suivante ▶')
         : h('div', { class: 'waiting' }, others.length ? `En attente de ${others.join(', ')}…` : 'Nouvelle donne…'),
+    ]);
+  }
+
+  /** Toucher une bulle d'annonce : affiche sa signification (aide aux enchères ≥ Intermédiaire). */
+  explainSeat(rel) {
+    const v = this.view;
+    if (!v || getSettings().bidHelp < 2 || v.phase !== 'bidding') return;
+    const seat = (v.seat + rel) % 4;
+    const m = auctionMeanings(v);
+    for (let i = m.length - 1; i >= 0; i--) {
+      if (m[i].seat === seat) {
+        toast(`${v.names[seat]} — ${m[i].label} : ${m[i].text}`, 5000);
+        return;
+      }
+    }
+  }
+
+  /** Historique des annonces de la donne avec leur signification. */
+  showAuction() {
+    const v = this.view;
+    if (!v || !v.auction || !v.auction.history.length) { toast('Aucune annonce pour l\'instant'); return; }
+    const list = h('ol', { class: 'auction-list' });
+    for (const m of auctionMeanings(v)) {
+      list.append(h('li', { class: `al-item ${m.type} ${teamOf(m.seat) === this.us() ? 'us' : 'them'}` },
+        h('div', { class: 'al-head' }, h('b', null, v.names[m.seat]), h('span', { class: 'al-bid' }, renderBidText(m.label))),
+        h('div', { class: 'al-text' }, renderBidText(m.text))));
+    }
+    const c = v.contract;
+    const md = openModal([
+      h('h3', null, 'Annonces de la donne'),
+      c ? h('p', { class: 'muted small' }, 'Contrat : ', renderBidText(`${contractLabel(c)} (${v.names[c.seat]})`)) : null,
+      list,
+      h('button', { class: 'btn', onClick: () => md.close() }, 'Fermer'),
     ]);
   }
 

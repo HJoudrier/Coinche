@@ -2,6 +2,7 @@
 import { h, segmented } from './dom.js';
 import { getSettings, updateSettings, OPTIONS, DEFAULT_SETTINGS } from '../settings.js';
 import { HELP_DESCRIPTIONS } from '../advisor.js';
+import { CONVENTION_SUMMARY } from '../bidding.js';
 
 const AI_DESC = {
   easy: 'Les robots jouent souvent au hasard et annoncent approximativement.',
@@ -79,6 +80,10 @@ export function rulesBody() {
       h('li', null, 'L\'atout choisi peut être ♥ cœur, ♦ carreau, ♣ trèfle, ♠ pique, SA (sans atout) ou TA (tout atout).'),
       h('li', null, 'Un adversaire peut coincher le dernier contrat (points ×2) ; l\'équipe preneuse peut alors surcoincher (×4).'),
       h('li', null, 'Les enchères s\'arrêtent après trois « passe » consécutifs. Si les quatre joueurs passent d\'entrée, on redistribue.')),
+    h('h3', null, 'Conventions d\'enchères'),
+    h('p', null, 'Les robots annoncent selon les conventions classiques : la première annonce montre la qualité de l\'atout, les as s\'annoncent ensuite. Les conseils d\'enchères suivent les mêmes règles. À partir de l\'aide « Intermédiaire », touchez une bulle d\'annonce pour en connaître la signification.'),
+    h('table', { class: 'tbl conventions' },
+      h('tbody', null, CONVENTION_SUMMARY.map(([k, txt]) => h('tr', null, h('td', null, h('b', null, k)), h('td', null, txt))))),
     h('h3', null, 'Valeur des cartes'),
     h('table', { class: 'tbl compact' },
       h('thead', null, h('tr', null, h('th', null, 'Carte'), h('th', null, 'Atout'), h('th', null, 'Non atout'), h('th', null, 'SA'), h('th', null, 'TA'))),

@@ -56,7 +56,7 @@ function hostConfig() {
   const st = getSettings();
   return {
     aiLevel: st.aiLevel, bidTimer: st.bidTimer, playTimer: st.playTimer,
-    targetScore: st.targetScore, robotSpeed: st.robotSpeed,
+    targetScore: st.targetScore, robotSpeed: st.robotSpeed, counterCallFrom: st.counterCallFrom,
   };
 }
 
@@ -659,6 +659,7 @@ onSettingsChange((st) => {
   if (session.host) {
     Object.assign(session.host.config, {
       aiLevel: st.aiLevel, bidTimer: st.bidTimer, playTimer: st.playTimer, robotSpeed: st.robotSpeed,
+      counterCallFrom: st.counterCallFrom,
     });
   }
 });

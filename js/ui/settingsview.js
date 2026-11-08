@@ -54,6 +54,13 @@ export function settingsBody(ctx = {}) {
     field('Pour chaque enchère', timerSelect('bidTimer'), 'À expiration, le joueur passe automatiquement.', guestNote),
     field('Pour jouer une carte', timerSelect('playTimer'), 'À expiration, une carte conseillée est jouée automatiquement.', guestNote));
 
+  const ccSelect = h('select', { onChange: (e) => updateSettings({ counterCallFrom: Number(e.target.value) }) },
+    OPTIONS.counterCall.map(([v, label]) => h('option', { value: v, selected: st.counterCallFrom === v }, label)));
+  body.append(h('h3', null, 'Conventions de jeu'),
+    field('Contre-appels de l\'équipe preneuse', ccSelect,
+      'Lors d\'une défausse, la première petite carte est un signal. Appel direct : « joue cette couleur, j\'en ai l\'as ». Contre-appel : « je n\'ai rien ici, joue ailleurs ». La défense appelle toujours directement.',
+      guestNote));
+
   body.append(h('h3', null, 'Confort'),
     h('label', { class: 'switch' },
       h('input', { type: 'checkbox', checked: st.confirmPlay, onChange: (e) => updateSettings({ confirmPlay: e.target.checked }) }),
@@ -97,6 +104,12 @@ export function rulesBody() {
       h('li', null, 'À l\'atout, il faut monter (jouer plus fort) si on le peut. En tout atout, il faut monter dans la couleur demandée.'),
       h('li', null, 'Sans la couleur demandée : si son partenaire est maître, on joue ce que l\'on veut ; sinon on doit couper, surcouper si un adversaire a déjà coupé, ou à défaut sous-couper.'),
       h('li', null, 'Belote : le roi et la dame d\'atout dans la même main (contrat à la couleur) valent 20 points, toujours acquis à l\'équipe qui les détient.')),
+    h('h3', null, 'Stratégie de jeu des robots'),
+    h('ul', null,
+      h('li', null, 'L\'équipe preneuse fait d\'abord tomber les atouts adverses, pour ne pas se faire couper ses as. Le partenaire du preneur rejoue atout dès qu\'il a la main.'),
+      h('li', null, 'Si le partenaire tient le valet d\'atout (montré aux enchères), on entame un petit atout : l\'adversaire est obligé de monter et peut perdre son 9.'),
+      h('li', null, 'Les robots retiennent ce que le jeu révèle : couleur non fournie (plus de cartes), grosse carte donnée sans prendre (10 sec, 9 sec), atout plus faible joué alors qu\'il fallait monter (pas d\'atout plus fort).'),
+      h('li', null, 'Appels : à la première défausse, une petite carte (7, 8, 9) est un signal. Appel direct = « j\'ai l\'as de cette couleur, joue-la ». Contre-appel = « rien ici, joue ailleurs ». L\'équipe preneuse joue en contre-appels à partir du seuil choisi dans les paramètres (100 par défaut) ; la défense appelle toujours directement.')),
     h('h3', null, 'Réussite du contrat'),
     h('ul', null,
       h('li', null, h('b', null, 'Il faut toujours au moins 82 points de cartes, belote non comptée.'), ' Une enchère à 80 n\'est donc jamais remplie grâce à la belote.'),

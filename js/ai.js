@@ -18,30 +18,121 @@ const isTrumpCard = (c, trump) => isColor(trump) && suitOf(c) === trump;
 // Connaissance : cartes jouées, cartes inconnues, chicanes observées.
 // ctx = {seat, hand, trick, tricks, contract}
 // ---------------------------------------------------------------------------
+/** Réglages du jeu des robots (ajustés par simulations). */
+export const TUNING = {
+  takerMinTrumps: 2, // le preneur sans atout maître rejoue atout s'il en a au moins autant
+  partnerLeadsTrump: 'always', // le partenaire du preneur rejoue atout dès qu'il a la main
+  quietNeutral: false, // défausse sans signal : préférer V/D plutôt qu'une petite carte (coûte des points)
+  signals: true, // appels et contre-appels
+  partnerKnownTrick: true, // petit atout quand le partenaire tient l'atout maître
+  useProbVoid: true, // tenir compte des couleurs probablement épuisées (10 sec…)
+  chargeMin: 3, // partenaire maître : on le charge d'une carte valant au moins 3 points, sinon on signale
+  followCalls: true, // entamer la couleur appelée par le partenaire
+  mcPrior: 10, // Monte-Carlo : avance (en points d'écart moyen) accordée à la carte de la stratégie
+  mcPriorTrumpDraw: 25, // … et quand l'équipe preneuse fait tomber les atouts
+};
+
+/** Petite carte (aucun point) : sert aux appels et contre-appels lors des défausses. */
+export const isSmall = (card, trump) => cardPoints(card, trump) === 0;
+
+/** Mode de signalisation d'un joueur : contre-appels pour l'équipe preneuse à partir du seuil, sinon appels directs. */
+export function signalMode(seat, contract, conv) {
+  const from = conv && conv.counterFrom !== undefined && conv.counterFrom !== null ? conv.counterFrom : 100;
+  return teamOf(seat) === contract.team && contract.value >= from ? 'counter' : 'direct';
+}
+
+/** Carte la plus forte d'une couleur (as en couleur ordinaire et sans atout, valet à l'atout et en tout atout). */
+function topCardOf(suit, trump) {
+  return (trump === 'AT' || suit === trump ? 'J' : 'A') + suit;
+}
+
+/**
+ * Ce que l'on sait des mains d'après le jeu :
+ * - voids : couleurs épuisées (n'a pas fourni / n'a pas coupé) ;
+ * - probVoid : couleurs probablement épuisées (grosse carte donnée à l'adversaire : 10 sec, 9 sec…) ;
+ * - ceil : force maximale (exclue) encore possible dans une couleur (obligation de monter non respectée) ;
+ * - signals : premier appel / contre-appel de chaque joueur (première petite défausse) ;
+ * - likely / notHave : cartes probables ou exclues (annonces, appels).
+ */
 export function analyze(ctx) {
   const { hand, trick, tricks, contract } = ctx;
   const trump = contract.trump;
   const played = new Set();
-  const voids = [new Set(), new Set(), new Set(), new Set()];
+  const voids = [0, 1, 2, 3].map(() => new Set());
+  const probVoid = [0, 1, 2, 3].map(() => new Set());
+  const ceil = [{}, {}, {}, {}];
+  const ceilCard = [{}, {}, {}, {}];
+  const signals = [null, null, null, null];
   const all = tricks.map((t) => t.cards);
   if (trick.length) all.push(trick);
+  const setCeil = (s, suit, card) => {
+    const st = cardStrength(card, trump);
+    if (ceil[s][suit] === undefined || st < ceil[s][suit]) { ceil[s][suit] = st; ceilCard[s][suit] = card; }
+  };
   for (const tc of all) {
     const lead = suitOf(tc[0].card);
     for (let i = 0; i < tc.length; i++) {
       const { seat: s, card } = tc[i];
       played.add(card);
-      if (i === 0 || suitOf(card) === lead) continue;
+      if (i === 0) continue;
+      const before = tc.slice(0, i);
+      const winSeat = trickWinnerSeat(before, trump);
+      const winCard = before.find((x) => x.seat === winSeat).card;
+      const partnerWinning = winSeat === partnerOf(s);
+      if (suitOf(card) === lead) {
+        // obligation de monter (atout demandé, tout atout) : jouer plus bas = rien de plus fort dans la couleur
+        const mustRise = (isColor(trump) && lead === trump) || trump === 'AT';
+        if (mustRise && suitOf(winCard) === lead && cardStrength(card, trump) < cardStrength(winCard, trump)) setCeil(s, lead, winCard);
+        // grosse carte donnée à l'adversaire sans prendre : c'était sans doute la dernière de la couleur
+        const nowWin = trickWinnerSeat([...before, { seat: s, card }], trump);
+        if (!partnerWinning && nowWin !== s && cardPoints(card, trump) >= 10) probVoid[s].add(lead);
+        continue;
+      }
       voids[s].add(lead);
-      if (isColor(trump) && lead !== trump && suitOf(card) !== trump) {
-        // ne fournit pas et ne coupe pas alors que son partenaire n'était pas maître : plus d'atout
-        if (trickWinnerSeat(tc.slice(0, i), trump) !== partnerOf(s)) voids[s].add(trump);
+      if (isColor(trump) && lead !== trump) {
+        if (suitOf(card) !== trump) {
+          // ne fournit pas et ne coupe pas alors que son partenaire n'était pas maître : plus d'atout
+          if (!partnerWinning) voids[s].add(trump);
+        } else if (!partnerWinning && suitOf(winCard) === trump && cardStrength(card, trump) < cardStrength(winCard, trump)) {
+          // sous-coupe : il n'avait pas d'atout plus fort que celui qui menait
+          setCeil(s, trump, winCard);
+        }
+      }
+      // première petite défausse = appel ou contre-appel
+      if (!isTrumpCard(card, trump) && signals[s] === null && isSmall(card, trump)) {
+        signals[s] = { suit: suitOf(card), card, mode: signalMode(s, contract, ctx.conv) };
       }
     }
   }
   const handSet = new Set(hand);
   const unknown = ALL_CARDS.filter((c) => !played.has(c) && !handSet.has(c));
-  return { trump, played, voids, unknown };
+  const unknownSet = new Set(unknown);
+  const likely = [0, 1, 2, 3].map(() => new Set());
+  const notHave = [0, 1, 2, 3].map(() => new Set());
+  // annonces : cartes révélées par les enchères
+  if (ctx.auction && ctx.auction.length) {
+    const leader = ctx.dealer !== undefined && ctx.dealer !== null ? (ctx.dealer + 1) % 4 : null;
+    const kn = auctionKnowledge(ctx.auction, leader);
+    for (let s = 0; s < 4; s++) {
+      if (s === ctx.seat) continue;
+      for (const c of knownCards(kn, s, hand)) if (unknownSet.has(c) && !voids[s].has(suitOf(c))) likely[s].add(c);
+    }
+  }
+  // appels : l'appel direct promet la carte maîtresse de la couleur, le contre-appel la nie
+  for (let s = 0; s < 4; s++) {
+    const sig = signals[s];
+    if (!sig || s === ctx.seat) continue;
+    const top = topCardOf(sig.suit, trump);
+    if (!unknownSet.has(top)) continue;
+    if (sig.mode === 'direct') likely[s].add(top); else notHave[s].add(top);
+  }
+  return {
+    trump, played, voids, unknown, probVoid, ceil, ceilCard, signals, likely, notHave,
+  };
 }
+
+/** Couleur épuisée, sûre ou probable. */
+const outOf = (info, s, suit) => info.voids[s].has(suit) || (TUNING.useProbVoid && info.probVoid && info.probVoid[s].has(suit));
 
 function higherUnknown(card, info) {
   const s = suitOf(card);
@@ -115,6 +206,14 @@ export function heuristicPlay(ctx, info = analyze(ctx)) {
   const winCard = trick.find((t) => t.seat === winSeat).card;
   const pts = trickPoints(trick, trump);
   const wins = (c) => trickWinnerSeat([...trick, { seat, card: c }], trump) === seat;
+  // défausse (on ne peut pas fournir) : occasion d'appeler ou de contre-appeler
+  const discarding = !hand.some((c) => suitOf(c) === lead);
+  const freePool = discarding ? legal.filter((c) => !isTrumpCard(c, trump)) : [];
+  const discard = (fallbackReason) => {
+    const sig = signalDiscard(ctx, info, freePool);
+    if (sig) return sig;
+    return { card: quietDiscard(ctx, info, freePool), reason: fallbackReason };
+  };
 
   if (winSeat === partnerOf(seat)) {
     const safe = !canBeBeaten(winCard, lead, oppsAfter, info);
@@ -127,11 +226,14 @@ export function heuristicPlay(ctx, info = analyze(ctx)) {
         else if (isMaster(c, info) && hand.length > 2) v -= rankOf(c) === 'T' ? 2 : 14;
         return v;
       });
+      if (freePool.length && cardPoints(card, trump) < TUNING.chargeMin) return discard('Votre partenaire est maître : défaussez une petite carte.');
       return {
         card,
         reason: cardPoints(card, trump) >= 10
           ? 'Votre partenaire est maître : chargez le pli en points.'
-          : 'Votre partenaire est maître : jouez une petite carte.',
+          : cardPoints(card, trump) >= TUNING.chargeMin
+            ? 'Votre partenaire est maître : donnez-lui des points.'
+            : 'Votre partenaire est maître : jouez une petite carte.',
       };
     }
     const safeWin = legal.filter((c) => wins(c) && !canBeBeaten(c, lead, oppsAfter, info)
@@ -139,6 +241,7 @@ export function heuristicPlay(ctx, info = analyze(ctx)) {
     if (safeWin.length && pts >= 10) {
       return { card: minBy(safeWin, (c) => cardStrength(c, trump)), reason: 'Assurez le pli avec une carte maîtresse.' };
     }
+    if (freePool.length) return discard('Le pli est incertain : ne chargez pas.');
     return { card: minBy(legal, (c) => discardCost(c, info, hand)), reason: 'Le pli est incertain : ne chargez pas.' };
   }
 
@@ -170,6 +273,7 @@ export function heuristicPlay(ctx, info = analyze(ctx)) {
       return { card, reason: 'Tentez de prendre le pli.' };
     }
   }
+  if (freePool.length && !winners.length) return discard('Vous ne pouvez pas prendre : défaussez une petite carte.');
   return {
     card: minBy(legal, (c) => discardCost(c, info, hand)),
     reason: winners.length ? 'Laissez passer : jouez petit.' : 'Vous ne pouvez pas prendre : défaussez une petite carte.',
@@ -183,33 +287,56 @@ function leadCard(ctx, legal, info) {
   const takerTeam = contract.team === myTeam;
   const opps = [(seat + 1) % 4, (seat + 3) % 4];
   const partner = partnerOf(seat);
+  const pSig = info.signals ? info.signals[partner] : null;
+  const called = pSig && pSig.mode === 'direct' && pSig.suit !== trump ? pSig.suit : null;
+  const refused = pSig && pSig.mode === 'counter' ? pSig.suit : null;
+  const partnerKnown = info.likely ? info.likely[partner] : new Set();
+  // un adversaire qui a de l'atout coupera-t-il cette couleur ?
+  const unknownTrumps = isColor(trump) ? info.unknown.filter((c) => suitOf(c) === trump) : [];
+  const oppTrumpsLeft = unknownTrumps.filter((c) => !partnerKnown.has(c));
+  const cutRisk = (suit) => isColor(trump) && suit !== trump && oppTrumpsLeft.length > 0
+    && opps.some((o) => outOf(info, o, suit) && !info.voids[o].has(trump));
 
   if (isColor(trump)) {
     const myTrumps = hand.filter((c) => suitOf(c) === trump);
-    const unknownTrumps = info.unknown.filter((c) => suitOf(c) === trump);
-    const oppsMayHaveTrump = unknownTrumps.length > 0 && opps.some((o) => !info.voids[o].has(trump));
+    const oppsMayHaveTrump = oppTrumpsLeft.length > 0 && opps.some((o) => !info.voids[o].has(trump));
+    // 1) L'équipe preneuse fait tomber les atouts adverses
     if (takerTeam && myTrumps.length && oppsMayHaveTrump) {
       const masters = myTrumps.filter((c) => isMaster(c, info));
       if (masters.length) {
         return { card: maxBy(masters, (c) => cardStrength(c, trump)), reason: 'Faites tomber les atouts adverses avec votre atout maître.' };
       }
-      if (contract.seat === seat && myTrumps.length >= 3) {
-        return { card: minBy(myTrumps, (c) => cardStrength(c, trump)), reason: 'Preneur : rejouez atout pour épuiser ceux des adversaires.' };
+      const topOut = maxBy(unknownTrumps, (c) => cardStrength(c, trump));
+      if (TUNING.partnerKnownTrick && topOut && partnerKnown.has(topOut)) {
+        return {
+          card: minBy(myTrumps, (c) => cardStrength(c, trump)),
+          reason: `Votre partenaire a ${cardLabel(topOut)} : jouez petit atout. L'adversaire devra monter et votre partenaire prendra (un 9 adverse peut tomber).`,
+        };
       }
-      if (contract.seat === partner && ctx.tricks.length === 0) {
-        return { card: minBy(myTrumps, (c) => cardStrength(c, trump)), reason: 'Rejouez atout pour votre partenaire preneur.' };
+      if (contract.seat === seat && myTrumps.length >= TUNING.takerMinTrumps) {
+        return { card: minBy(myTrumps, (c) => cardStrength(c, trump)), reason: 'Preneur : jouez atout pour faire tomber ceux des adversaires avant de jouer vos as.' };
+      }
+      if (contract.seat === partner && (TUNING.partnerLeadsTrump === 'always'
+        || (TUNING.partnerLeadsTrump === 'first' && ctx.tricks.length === 0))) {
+        return { card: minBy(myTrumps, (c) => cardStrength(c, trump)), reason: 'Rejouez atout pour votre partenaire preneur : il faut épuiser les atouts adverses.' };
       }
     }
-    // cartes maîtresses hors atout qui ne risquent pas d'être coupées
-    const sideMasters = hand.filter((c) => suitOf(c) !== trump && isMaster(c, info)
-      && !(unknownTrumps.length && opps.some((o) => info.voids[o].has(suitOf(c)) && !info.voids[o].has(trump))));
+    // 2) Couleur appelée par le partenaire (il en a la carte maîtresse)
+    if (called && TUNING.followCalls) {
+      const inCalled = hand.filter((c) => suitOf(c) === called);
+      if (inCalled.length && !cutRisk(called) && info.unknown.includes(topCardOf(called, trump))) {
+        return { card: minBy(inCalled, (c) => cardStrength(c, trump)), reason: `Votre partenaire a appelé à ${SUIT_SYMBOL[called]} : jouez cette couleur, il a la carte maîtresse.` };
+      }
+    }
+    // 3) Cartes maîtresses hors atout qui ne risquent pas d'être coupées
+    const sideMasters = hand.filter((c) => suitOf(c) !== trump && isMaster(c, info) && !cutRisk(suitOf(c)));
     if (sideMasters.length) {
-      return { card: maxBy(sideMasters, (c) => cardPoints(c, trump)), reason: 'Jouez votre carte maîtresse.' };
+      return { card: maxBy(sideMasters, (c) => cardPoints(c, trump)), reason: 'Jouez votre carte maîtresse (les atouts adverses sont tombés ou la couleur ne sera pas coupée).' };
     }
-    // faire couper le partenaire
+    // 4) Faire couper le partenaire
     const partnerCuts = !info.voids[partner].has(trump) && unknownTrumps.length > 0;
     if (partnerCuts) {
-      const forPartner = hand.filter((c) => suitOf(c) !== trump && info.voids[partner].has(suitOf(c)));
+      const forPartner = hand.filter((c) => suitOf(c) !== trump && outOf(info, partner, suitOf(c)));
       if (forPartner.length) {
         return { card: minBy(forPartner, (c) => cardPoints(c, trump)), reason: 'Votre partenaire n\'a plus cette couleur : faites-le couper.' };
       }
@@ -218,25 +345,74 @@ function leadCard(ctx, legal, info) {
     if (side.length) {
       const card = minBy(side, (c) => {
         let v = cardPoints(c, trump);
-        const s = suitOf(c);
-        const aceOut = info.unknown.includes('A' + s);
-        if (aceOut && hand.includes('T' + s)) v += 12; // ne pas exposer un 10 non protégé
-        if (!takerTeam && opps.some((o) => info.voids[o].has(s) && !info.voids[o].has(trump))) v += 15;
+        const su = suitOf(c);
+        const aceOut = info.unknown.includes(`A${su}`);
+        if (aceOut && hand.includes(`T${su}`)) v += 12; // ne pas exposer un 10 non protégé
+        if (cutRisk(su)) v += takerTeam ? 8 : 15;
+        if (su === refused) v += 20; // contre-appel du partenaire : pas cette couleur
         return v;
       });
-      return { card, reason: 'Ouvrez avec une petite carte pour ne pas donner de points.' };
+      return {
+        card,
+        reason: refused && suitOf(card) !== refused
+          ? `Votre partenaire a fait un contre-appel à ${SUIT_SYMBOL[refused]} : ouvrez ailleurs, avec une petite carte.`
+          : 'Ouvrez avec une petite carte pour ne pas donner de points.',
+      };
     }
     return { card: minBy(legal, (c) => cardStrength(c, trump)), reason: 'Il ne vous reste que des atouts.' };
   }
 
-  // Sans atout / tout atout : jouer les maîtresses, sinon une petite carte de la couleur la plus longue
+  // Sans atout / tout atout : jouer les maîtresses, sinon la couleur appelée, sinon petit dans la couleur longue
   const masters = hand.filter((c) => isMaster(c, info));
   if (masters.length) {
     return { card: maxBy(masters, (c) => cardPoints(c, trump)), reason: 'Encaissez vos cartes maîtresses.' };
   }
-  const len = (s) => hand.filter((c) => suitOf(c) === s).length;
-  const card = minBy(hand, (c) => cardPoints(c, trump) * 2 - len(suitOf(c)));
+  if (called && hand.some((c) => suitOf(c) === called) && info.unknown.includes(topCardOf(called, trump))) {
+    return { card: minBy(hand.filter((c) => suitOf(c) === called), (c) => cardStrength(c, trump)), reason: `Votre partenaire a appelé à ${SUIT_SYMBOL[called]} : jouez cette couleur.` };
+  }
+  const len = (su) => hand.filter((c) => suitOf(c) === su).length;
+  const card = minBy(hand, (c) => cardPoints(c, trump) * 2 - len(suitOf(c)) + (suitOf(c) === refused ? 20 : 0));
   return { card, reason: 'Ouvrez petit dans votre couleur longue.' };
+}
+
+/**
+ * Défausse porteuse d'un signal (première petite défausse de la manche) :
+ * appel direct = petite carte de la couleur dont on a la carte maîtresse ;
+ * contre-appel = petite carte d'une couleur où l'on n'a rien.
+ */
+function signalDiscard(ctx, info, pool) {
+  const { seat, hand, contract } = ctx;
+  const trump = contract.trump;
+  if (!TUNING.signals || (info.signals && info.signals[seat])) return null;
+  const small = pool.filter((c) => !isTrumpCard(c, trump) && isSmall(c, trump));
+  if (!small.length) return null;
+  const strong = (su) => hand.some((c) => suitOf(c) === su && !isTrumpCard(c, trump) && isMaster(c, info));
+  const mode = signalMode(seat, contract, ctx.conv);
+  if (mode === 'direct') {
+    const calls = small.filter((c) => strong(suitOf(c)));
+    if (calls.length) {
+      const card = minBy(calls, (c) => cardStrength(c, trump));
+      return { card, reason: `Appel : défaussez une petite carte à ${SUIT_SYMBOL[suitOf(card)]} pour demander cette couleur à votre partenaire (vous en avez la carte maîtresse).` };
+    }
+  } else {
+    const weak = small.filter((c) => !strong(suitOf(c)));
+    if (weak.length) {
+      const len = (su) => hand.filter((c) => suitOf(c) === su).length;
+      const card = minBy(weak, (c) => -len(suitOf(c)) * 10 + cardStrength(c, trump));
+      return { card, reason: `Contre-appel (contrat à ${contract.value}) : défaussez à ${SUIT_SYMBOL[suitOf(card)]}, où vous n'avez rien, pour que votre partenaire joue ailleurs.` };
+    }
+  }
+  return null;
+}
+
+/** Défausse sans signal : on évite une petite carte qui serait lue comme un faux appel. */
+function quietDiscard(ctx, info, pool) {
+  const { hand, contract } = ctx;
+  const trump = contract.trump;
+  if (!TUNING.quietNeutral || (info.signals && info.signals[ctx.seat])) return minBy(pool, (c) => discardCost(c, info, hand));
+  const neutral = pool.filter((c) => !isTrumpCard(c, trump) && !isSmall(c, trump) && cardPoints(c, trump) <= 4 && !isMaster(c, info));
+  if (neutral.length) return minBy(neutral, (c) => discardCost(c, info, hand));
+  return minBy(pool, (c) => discardCost(c, info, hand));
 }
 
 // ---------------------------------------------------------------------------
@@ -328,8 +504,19 @@ function sampleHands(ctx, info, rand, auctionForced = {}, lengths = {}) {
       [cards[i], cards[j]] = [cards[j], cards[i]];
     }
     const useForced = attempt < 20 ? forced : beloteOnly(forced, ctx);
-    const eligible = (c) => (useForced[c] !== undefined ? [useForced[c]]
-      : others.filter((s) => attempt < 25 ? !info.voids[s].has(suitOf(c)) : true));
+    const eligible = (c) => {
+      if (useForced[c] !== undefined) return [useForced[c]];
+      const su = suitOf(c);
+      return others.filter((s) => {
+        if (attempt >= 25) return true;
+        if (info.voids[s].has(su)) return false;
+        // obligation de monter non respectée : pas de carte plus forte que le plafond
+        if (info.ceil && info.ceil[s][su] !== undefined && cardStrength(c, info.trump) >= info.ceil[s][su]) return false;
+        if (attempt < 20 && info.notHave && info.notHave[s].has(c)) return false;
+        if (attempt < 12 && info.probVoid && info.probVoid[s].has(su)) return false;
+        return true;
+      });
+    };
     cards.sort((a, b) => eligible(a).length - eligible(b).length);
     for (const c of cards) {
       const el = eligible(c).filter((s) => cap[s] > 0);
@@ -391,7 +578,9 @@ export function rollout(ctx, hands, firstCard, forTeam, beloteTeam) {
     } else {
       turn = (turn + 1) % 4;
     }
-    card = heuristicPlay({ seat: turn, hand: h[turn], trick, tricks, contract }).card;
+    card = heuristicPlay({
+      seat: turn, hand: h[turn], trick, tricks, contract, conv: ctx.conv,
+    }).card;
   }
   const res = scoreRound({ contract, cardPoints: cardPts, tricksBySeat, beloteTeam });
   return res.score[forTeam] - res.score[1 - forTeam];
@@ -409,6 +598,15 @@ export function monteCarloPlay(ctx, {
   let n = 0;
   const myTeam = teamOf(ctx.seat);
   const fromAuction = useAuction ? auctionForcedCards(ctx, info) : {};
+  if (useAuction && info.likely) {
+    // cartes promises par un appel direct (as de la couleur appelée)
+    for (let st = 0; st < 4; st++) for (const c of info.likely[st]) if (fromAuction[c] === undefined) fromAuction[c] = st;
+  }
+  // une déduction contredite par le jeu (plafond d'atout, couleur épuisée) est abandonnée
+  for (const [c, st] of Object.entries(fromAuction)) {
+    const su = suitOf(c);
+    if (info.voids[st].has(su) || (info.ceil[st][su] !== undefined && cardStrength(c, info.trump) >= info.ceil[st][su])) delete fromAuction[c];
+  }
   const lengths = useAuction ? auctionLengths(ctx, info) : {};
   while (n < maxSamples && (n < 6 || now() - start < budgetMs)) {
     const hands = sampleHands(ctx, info, rand, fromAuction, lengths);
@@ -419,7 +617,9 @@ export function monteCarloPlay(ctx, {
   }
   if (!n) return base;
   let best = base.card;
-  let bv = totals.get(base.card) + 1e-6 * n; // à égalité, garder le choix heuristique
+  // prime à la carte de la stratégie : les simulations ne s'en écartent que si l'écart est net
+  const trumpDraw = !ctx.trick.length && isTrumpCard(base.card, ctx.contract.trump) && ctx.contract.team === teamOf(ctx.seat);
+  let bv = totals.get(base.card) + ((trumpDraw ? TUNING.mcPriorTrumpDraw : TUNING.mcPrior) + 1e-6) * n;
   for (const [c, v] of totals) if (v > bv) { bv = v; best = c; }
   return {
     card: best,
@@ -453,6 +653,7 @@ export function toCtx(view) {
     handCounts: view.handCounts,
     auction: view.auction ? view.auction.history : [],
     dealer: view.dealer,
+    conv: { counterFrom: view.config && view.config.counterCallFrom !== undefined ? view.config.counterCallFrom : 100 },
   };
 }
 

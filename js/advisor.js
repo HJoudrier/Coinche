@@ -110,6 +110,25 @@ export function memoryInfo(view, info = analyze(toCtx(view))) {
     if (parts.length) deductions.push(`${view.names[s]} ${parts.join(', ')}`);
   }
   if (deductions.length) lines.push(`D'après les annonces : ${deductions.join(' · ')}`);
+  // déductions du jeu : appels, couleurs probablement épuisées, plafonds d'atout
+  const partner = (view.seat + 2) % 4;
+  for (let s = 0; s < 4; s++) {
+    if (s === view.seat) continue;
+    const sig = info.signals[s];
+    if (sig) {
+      const who = s === partner ? `${view.names[s]} (partenaire)` : view.names[s];
+      lines.push(sig.mode === 'direct'
+        ? `${who} : appel à ${SUIT_SYMBOL[sig.suit]} (défausse du ${cardLabel(sig.card)}) — il en a la carte maîtresse`
+        : `${who} : contre-appel à ${SUIT_SYMBOL[sig.suit]} (défausse du ${cardLabel(sig.card)}) — pas de jeu dans cette couleur`);
+    }
+    const prob = [...info.probVoid[s]].filter((x) => !info.voids[s].has(x));
+    if (prob.length) lines.push(`${view.names[s]} n'a probablement plus de ${prob.map((x) => SUIT_SYMBOL[x]).join('')} (grosse carte donnée sans prendre)`);
+    const ceilT = info.ceil[s][trump];
+    if (SUITS.includes(trump) && info.ceilCard[s][trump] && !info.voids[s].has(trump)
+      && info.unknown.some((c) => suitOf(c) === trump && cardStrength(c, trump) >= ceilT)) {
+      lines.push(`${view.names[s]} n'a pas d'atout plus fort que ${cardLabel(info.ceilCard[s][trump])} (n'a pas monté)`);
+    }
+  }
   const us = teamOf(view.seat);
   lines.push(`Points faits : nous ${view.cardPoints[us]} · eux ${view.cardPoints[1 - us]}`);
   return lines;

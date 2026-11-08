@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   robotSpeed: 'normal', // slow | normal | fast
   confirmPlay: false,
   signaling: '', // serveur PeerJS personnalisé (vide = serveur public)
+  counterCallFrom: 100, // contrat à partir duquel l'équipe preneuse joue en contre-appels (999 = jamais)
 });
 
 export const OPTIONS = {
@@ -40,6 +41,14 @@ export const OPTIONS = {
     [1000, '1000 points'],
     [1500, '1500 points'],
     [2000, '2000 points'],
+  ],
+  counterCall: [
+    [80, 'Toujours (dès 80)'],
+    [90, 'À partir de 90'],
+    [100, 'À partir de 100'],
+    [110, 'À partir de 110'],
+    [120, 'À partir de 120'],
+    [999, 'Jamais (appels directs)'],
   ],
   robotSpeed: [
     ['slow', 'Lente'],

@@ -153,7 +153,7 @@ export class GameHost {
 
   robotAct(seat) {
     if (this.destroyed || this.state.turn !== seat) return;
-    const view = getView(this.state, seat);
+    const view = this.viewFor(seat);
     const level = this.seats[seat].kind === 'robot' ? this.config.aiLevel : 'medium';
     let action;
     try {
@@ -177,7 +177,7 @@ export class GameHost {
     if (this.state.phase === 'bidding') {
       this.act(seat, { type: 'pass' });
     } else {
-      const view = getView(this.state, seat);
+      const view = this.viewFor(seat);
       this.act(seat, { type: 'play', card: heuristicPlay(toCtx(view)).card });
     }
   }

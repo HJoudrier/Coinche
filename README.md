@@ -15,6 +15,12 @@ L'interface est pensée d'abord pour le téléphone.
 - **Enchères par conventions** : la première annonce montre l'atout. 80 se fait avec le valet ou le 9 et 4 atouts, 90 avec le valet et le 9. Le barrage se fait avec 6 atouts.
   Le partenaire soutient à +10 par carte utile (as, valet ou 9 d'atout ; belote +20), et l'ouvreur annonce ses as au second tour.
   En sans atout et en tout atout, on compte ses levées sûres : 5 = 80, 6 = 90, 7 = 110. Celui qui entame la manche compte en entier sa longue couleur maîtresse.
+- **Jeu de la carte des robots** :
+  - L'équipe preneuse fait tomber les atouts adverses avant de jouer ses as, et le partenaire du preneur rejoue atout.
+    Si le partenaire tient le valet, on entame petit atout pour forcer l'adversaire à monter (son 9 peut tomber).
+  - Les robots retiennent ce que le jeu révèle : couleur non fournie, 10 sec ou 9 sec, atout plus faible joué alors qu'il fallait monter.
+  - Ils pratiquent les **appels** à la première défausse : petite carte de la couleur de son as.
+    L'équipe preneuse passe aux **contre-appels** (« rien ici ») à partir d'un contrat réglable, 100 par défaut ; la défense appelle toujours directement.
 - **Lecture des annonces** : chaque enchère révèle des cartes, par exemple 90 ♥ = valet et 9 de ♥. Les robots croisent ces informations avec leur main.
   Ils passent à tout atout quand l'équipe tient les 4 valets, exigent des arrêts dans la couleur adverse pour le sans atout et le tout atout, et coinchent un tout atout avec 2 valets.
   Au jeu de la carte, le robot difficile ne simule que des donnes compatibles avec les annonces. L'aide affiche « ce que l'on sait des mains ».

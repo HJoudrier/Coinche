@@ -5,6 +5,7 @@ import { contractLabel } from '../auction.js';
 import { computeGameStats, loadHistory, lifetimeStats, clearHistory, pct } from '../stats.js';
 import { renderBidText, roundSummaryContent } from './game.js';
 import { lineChart } from './chart.js';
+import { openReview } from './review.js';
 
 /**
  * @param {object|null} live  {history, names, seat, target} de la partie affichée (peut être null)
@@ -96,7 +97,9 @@ function gameStats(live) {
         h('span', { class: 'ri-c' }, renderBidText(`${names[r.contract.seat]} · ${contractLabel(r.contract)}`)),
         h('span', { class: 'ri-s' }, `${r.score[us]} / ${r.score[them]}`),
         h('span', { class: 'ri-r' }, r.success ? '✓' : '✗')),
-      h('div', { class: 'ri-body' }, roundSummaryContent(r, seat, names).slice(1)));
+      h('div', { class: 'ri-body' }, roundSummaryContent(r, seat, names, {
+        onReview: () => openReview(history, r.round - 1, { names, mySeat: seat }),
+      }).slice(1)));
     list.append(det);
   }
   wrap.append(list);

@@ -24,7 +24,9 @@ L'interface est pensée d'abord pour le téléphone.
 - **Aides réglables**, de « aucune » à « expert », séparément pour les enchères et pour le jeu :
   force de la main, enchère conseillée, lecture des annonces, cartes jouables, carte conseillée, atouts restants, cartes maîtresses.
 - **Temps limité** réglable pour chaque enchère et pour chaque carte. À expiration, le joueur passe, ou bien la carte conseillée est jouée.
-- **Score global** mis à jour à chaque manche, avec un résumé de fin de manche : points, belote, plis, mains de la donne.
+- **Score global** mis à jour à chaque manche, avec un résumé de fin de manche : points, belote, plis.
+- **Revoir la donne** depuis le résumé de fin de manche ou les statistiques, pour chaque manche de la partie.
+  On y trouve les mains de départ, les enchères avec leur signification, les 8 plis (qui entame, qui remporte, cumul des points) et un rejeu pas à pas sur la table, en manuel ou en lecture automatique.
 - **Statistiques** de la partie sur toutes les manches (courbe des scores, équipes, joueurs, atouts) et historique de toutes les parties jouées sur l'appareil.
 - **Page de paramétrage** : nom, niveau des robots, score à atteindre, vitesse des robots, aides, timers.
 - La partie solo est sauvegardée automatiquement et peut être reprise depuis l'accueil.

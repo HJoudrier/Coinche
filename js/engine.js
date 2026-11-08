@@ -180,6 +180,7 @@ function endRound(state) {
     generale: res.generale,
     totals: state.scores.slice(),
     hands: state.initialHands,
+    tricks: state.tricks.map((t) => ({ leader: t.leader, cards: t.cards, winner: t.winner, points: t.points })),
     redealsBefore: state.redeals,
   };
   state.redeals = 0;

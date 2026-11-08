@@ -11,6 +11,10 @@ import {
   bidAdvice, playAdvice, auctionMeanings, knowledgeLines,
 } from '../advisor.js';
 import { getSettings, onSettingsChange } from '../settings.js';
+import { renderBidText, auctionListEl } from './render.js';
+import { openReview } from './review.js';
+
+export { renderBidText };
 
 const REL = ['bottom', 'right', 'top', 'left'];
 const TRUMP_ORDER_UI = ['H', 'D', 'C', 'S', 'NT', 'AT'];
@@ -493,7 +497,9 @@ export class GameView {
     const v = this.view;
     if (!v || !v.roundResult || (v.phase !== 'roundEnd' && v.phase !== 'gameOver')) return;
     if (this.roundModal) this.roundModal.close();
-    const content = roundSummaryContent(v.roundResult, v.seat, v.names);
+    const content = roundSummaryContent(v.roundResult, v.seat, v.names, {
+      onReview: () => openReview(v.history, v.roundResult.round - 1, { names: v.names, mySeat: v.seat }),
+    });
     this.footer = h('div', { class: 'modal-footer' });
     if (v.phase === 'gameOver') {
       const us = this.us();
@@ -547,12 +553,7 @@ export class GameView {
   showAuction() {
     const v = this.view;
     if (!v || !v.auction || !v.auction.history.length) { toast('Aucune annonce pour l\'instant'); return; }
-    const list = h('ol', { class: 'auction-list' });
-    for (const m of auctionMeanings(v)) {
-      list.append(h('li', { class: `al-item ${m.type} ${teamOf(m.seat) === this.us() ? 'us' : 'them'}` },
-        h('div', { class: 'al-head' }, h('b', null, v.names[m.seat]), h('span', { class: 'al-bid' }, renderBidText(m.label))),
-        h('div', { class: 'al-text' }, renderBidText(m.text))));
-    }
+    const list = auctionListEl(auctionMeanings(v), v.names, v.seat);
     const c = v.contract;
     const know = knowledgeLines(v);
     const md = openModal([
@@ -584,20 +585,11 @@ export class GameView {
   }
 }
 
-/** Texte d'enchère avec symboles colorés. */
-export function renderBidText(text) {
-  const frag = document.createDocumentFragment();
-  for (const part of String(text).split(/([♥♦♠♣])/)) {
-    if (!part) continue;
-    if ('♥♦'.includes(part)) frag.append(h('span', { class: 'suit red' }, part));
-    else if ('♠♣'.includes(part)) frag.append(h('span', { class: 'suit' }, part));
-    else frag.append(part);
-  }
-  return frag;
-}
-
-/** Contenu du résumé de manche (réutilisé dans les statistiques). */
-export function roundSummaryContent(r, mySeat, names) {
+/**
+ * Contenu du résumé de manche (réutilisé dans les statistiques).
+ * `onReview` : ouvre l'écran « Revoir la donne » (mains, enchères, plis, rejeu).
+ */
+export function roundSummaryContent(r, mySeat, names, { onReview } = {}) {
   const us = teamOf(mySeat);
   const them = 1 - us;
   const c = r.contract;
@@ -620,10 +612,8 @@ export function roundSummaryContent(r, mySeat, names) {
       row('Score total', r.totals[us], r.totals[them], 'total')));
   const tricks = h('div', { class: 'muted small' },
     'Plis : ', [0, 1, 2, 3].map((s) => `${names[s]} ${r.tricksBySeat[s]}`).join(' · '));
-  const details = h('details', { class: 'hands' },
-    h('summary', null, 'Voir les mains de la donne'),
-    [0, 1, 2, 3].map((s) => h('div', { class: 'hand-line' },
-      h('span', { class: 'hl-name' }, names[s]),
-      h('span', { class: 'hl-cards' }, sortHand(r.hands[s], c.trump).map((x) => renderBidText(cardLabel(x) + ' '))))));
-  return [title, line, table, tricks, details];
+  const review = onReview
+    ? h('button', { class: 'btn small review-btn', onClick: onReview }, '🔍 Revoir la donne : mains, enchères, plis')
+    : null;
+  return [title, line, table, tricks, review];
 }

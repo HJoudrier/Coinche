@@ -514,6 +514,7 @@ export class GameView {
     if (this.roundModal) this.roundModal.close();
     const content = roundSummaryContent(v.roundResult, v.seat, v.names, {
       onReview: () => openReview(v.history, v.roundResult.round - 1, { names: v.names, mySeat: v.seat }),
+      onAnalyze: () => openReview(v.history, v.roundResult.round - 1, { names: v.names, mySeat: v.seat, tab: 'analysis' }),
     });
     this.footer = h('div', { class: 'modal-footer' });
     if (v.phase === 'gameOver') {
@@ -604,7 +605,7 @@ export class GameView {
  * Contenu du résumé de manche (réutilisé dans les statistiques).
  * `onReview` : ouvre l'écran « Revoir la donne » (mains, enchères, plis, rejeu).
  */
-export function roundSummaryContent(r, mySeat, names, { onReview } = {}) {
+export function roundSummaryContent(r, mySeat, names, { onReview, onAnalyze } = {}) {
   const us = teamOf(mySeat);
   const them = 1 - us;
   const c = r.contract;
@@ -630,5 +631,9 @@ export function roundSummaryContent(r, mySeat, names, { onReview } = {}) {
   const review = onReview
     ? h('button', { class: 'btn small review-btn', onClick: onReview }, '🔍 Revoir la donne : mains, enchères, plis')
     : null;
-  return [title, line, table, tricks, review];
+  // manche perdue pour notre équipe : proposer l'analyse cartes sur table
+  const analyze = onAnalyze && !good
+    ? h('button', { class: 'btn small review-btn analyze-btn', onClick: onAnalyze }, '🧠 Pouvait-on gagner cette manche ?')
+    : null;
+  return [title, line, table, tricks, analyze, review];
 }

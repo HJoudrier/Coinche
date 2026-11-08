@@ -614,3 +614,24 @@ details.hands { font-size: 0.88rem; }
 .rv-controls { display: flex; justify-content: center; gap: 6px; }
 .rv-controls .btn { min-width: 52px; font-size: 1.1rem; }
 .rv-score { text-align: center; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------ analyse cartes sur table */
+.analyze-btn { border-color: var(--accent); }
+.rv-analysis { display: flex; flex-direction: column; gap: 10px; }
+.rv-analysis h3 { margin: 8px 0 0; }
+.rv-result {
+  background: var(--panel-2); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  border-left: 5px solid var(--muted);
+}
+.rv-result.pending { flex-direction: row; align-items: center; gap: 10px; color: var(--text-2); }
+.rv-result.yes { border-left-color: var(--ok); }
+.rv-result.no { border-left-color: var(--danger); }
+.rv-verdict { font-size: 1.5rem; font-weight: 900; }
+.rv-result.yes .rv-verdict { color: var(--ok); }
+.rv-result.no .rv-verdict { color: var(--danger); }
+.rv-mistake { background: rgba(0, 0, 0, 0.25); border-radius: 8px; padding: 8px 10px; }
+.rv-stats { margin-top: 2px; }
+.spinner.small { width: 20px; height: 20px; margin: 0; border-width: 3px; flex: none; }
+.rv-phase { font-size: 0.8rem; color: var(--text-2); }
+.rv-phase.win { color: var(--ok); font-weight: 700; }
+.rv-fix { font-size: 0.85rem; color: var(--accent); margin-top: 2px; }

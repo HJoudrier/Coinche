@@ -36,6 +36,9 @@ L'interface est pensée d'abord pour le téléphone.
   force de la main, enchère conseillée, lecture des annonces, cartes jouables, carte conseillée, atouts restants, cartes maîtresses.
 - **Temps limité** réglable pour chaque enchère et pour chaque carte. À expiration, le joueur passe, ou bien la carte conseillée est jouée.
 - **Score global** mis à jour à chaque manche, avec un résumé de fin de manche : points, belote, plis.
+- **« Pouvait-on gagner cette manche ? »** après une manche perdue : analyse min-max « cartes sur table » (chaque joueur voit les 4 mains).
+  - La recherche coupe une branche dès que le contrat est assuré ou perdu, avec une table de transposition et l'élagage des cartes équivalentes. Une donne se résout en quelques dizaines de millisecondes en médiane.
+  - Elle répond Oui ou Non. Si la manche était gagnable, elle indique le coup décisif (pli, joueur, carte jouée, cartes qui gagnaient) et propose le rejeu de la partie gagnante.
 - **Revoir la donne** depuis le résumé de fin de manche ou les statistiques, pour chaque manche de la partie.
   On y trouve les mains de départ, les enchères avec leur signification, les 8 plis (qui entame, qui remporte, cumul des points) et un rejeu pas à pas sur la table, en manuel ou en lecture automatique.
 - **Statistiques** de la partie sur toutes les manches (courbe des scores, équipes, joueurs, atouts) et historique de toutes les parties jouées sur l'appareil.

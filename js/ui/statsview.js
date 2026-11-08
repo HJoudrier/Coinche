@@ -99,6 +99,7 @@ function gameStats(live) {
         h('span', { class: 'ri-r' }, r.success ? '✓' : '✗')),
       h('div', { class: 'ri-body' }, roundSummaryContent(r, seat, names, {
         onReview: () => openReview(history, r.round - 1, { names, mySeat: seat }),
+        onAnalyze: () => openReview(history, r.round - 1, { names, mySeat: seat, tab: 'analysis' }),
       }).slice(1)));
     list.append(det);
   }

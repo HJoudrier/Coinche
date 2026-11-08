@@ -1,23 +1,29 @@
-// Écran « Revoir la donne » : mains de départ, enchères, plis et rejeu pas à pas.
+// Écran « Revoir la donne » : mains de départ, enchères, plis, rejeu pas à pas et analyse cartes sur table.
 import { h, clear, cardEl, openPanel, segmented } from './dom.js';
 import { renderBidText, auctionListEl } from './render.js';
-import { teamOf, partnerOf, sortHand } from '../cards.js';
+import {
+  teamOf, partnerOf, sortHand, cardLabel,
+} from '../cards.js';
 import { contractLabel } from '../auction.js';
 import { explainAuction } from '../reading.js';
 import { replayState } from '../replay.js';
+import { analyzeRoundAsync } from '../mcclient.js';
 
 const REL = ['bottom', 'right', 'top', 'left'];
 const AUTO_DELAY = 900;
+// analyses déjà lancées (par manche et par joueur)
+const analysisCache = new WeakMap();
 
 /**
  * @param {object[]} history  enregistrements des manches de la partie
  * @param {number} index      manche à afficher (0 = première)
  * @param {{names: string[], mySeat: number}} o
  */
-export function openReview(history, index, { names, mySeat }) {
-  const st = { index: Math.max(0, Math.min(history.length - 1, index)), tab: 'hands', step: 0, timer: null };
+export function openReview(history, index, { names, mySeat, tab = 'hands' }) {
+  const st = { index: Math.max(0, Math.min(history.length - 1, index)), tab, step: 0 };
   const body = h('div', { class: 'review' });
-  const stopAuto = () => { if (st.timer) clearInterval(st.timer); st.timer = null; };
+  const stoppers = new Set();
+  const stopAuto = () => { for (const stop of stoppers) stop(); };
   const panel = openPanel('Revoir la donne', body, { onClose: stopAuto });
   const order = [mySeat, partnerOf(mySeat), (mySeat + 1) % 4, (mySeat + 3) % 4];
   const role = (s) => (s === mySeat ? 'vous' : s === partnerOf(mySeat) ? 'partenaire' : 'adversaire');
@@ -41,17 +47,19 @@ export function openReview(history, index, { names, mySeat }) {
         class: 'icon-btn', 'aria-label': 'Manche suivante', disabled: st.index >= history.length - 1,
         onClick: () => { st.index++; st.step = 0; draw(); },
       }, '▶'));
-    const tabs = segmented([['hands', 'Mains'], ['auction', 'Enchères'], ['tricks', 'Plis'], ['replay', 'Rejeu']], st.tab,
+    const tabs = segmented([['hands', 'Mains'], ['auction', 'Enchères'], ['tricks', 'Plis'], ['replay', 'Rejeu'], ['analysis', 'Analyse']], st.tab,
       (v) => { st.tab = v; drawTab(); }, { small: true });
     const content = h('div', { class: 'rv-content' });
     body.append(nav, tabs, content);
     const drawTab = () => {
       stopAuto();
+      stoppers.clear();
       clear(content);
       if (st.tab === 'hands') content.append(handsTab(r));
       else if (st.tab === 'auction') content.append(auctionTab(r));
       else if (st.tab === 'tricks') content.append(tricksTab(r));
-      else content.append(replayTab(r));
+      else if (st.tab === 'analysis') content.append(analysisTab(r));
+      else content.append(replayView(r, { state: st }));
     };
     drawTab();
   };
@@ -104,8 +112,15 @@ export function openReview(history, index, { names, mySeat }) {
     return wrap;
   }
 
-  function replayTab(r) {
+  /**
+   * Rejeu pas à pas d'une manche (réelle ou ligne gagnante).
+   * state.step est conservé ; divergeStep = première carte qui diffère de la partie réelle.
+   */
+  function replayView(r, { state = { step: 0 }, divergeStep = null, realCards = null } = {}) {
     if (!r.tricks || !r.tricks.length) return noTricks();
+    let timer = null;
+    const stop = () => { if (timer) clearInterval(timer); timer = null; };
+    stoppers.add(stop);
     const wrap = h('div', { class: 'rv-replay' });
     const table = h('div', { class: 'rv-table' });
     const trickEl = h('div', { class: 'trick' });
@@ -115,30 +130,30 @@ export function openReview(history, index, { names, mySeat }) {
     const score = h('div', { class: 'rv-score small' });
     const handsEl = h('div', { class: 'rv-hands' });
     const autoBtn = h('button', { class: 'btn small', 'aria-label': 'Lecture automatique' }, '⏯');
-    const go = (k) => { st.step = Math.max(0, Math.min(32, k)); render(); };
+    const go = (k) => { state.step = Math.max(0, Math.min(32, k)); render(); };
     const controls = h('div', { class: 'rv-controls' },
-      h('button', { class: 'btn small', 'aria-label': 'Début', onClick: () => { stopAuto(); go(0); } }, '⏮'),
-      h('button', { class: 'btn small', 'aria-label': 'Carte précédente', onClick: () => { stopAuto(); go(st.step - 1); } }, '◀'),
+      h('button', { class: 'btn small', 'aria-label': 'Début', onClick: () => { stop(); go(0); } }, '⏮'),
+      h('button', { class: 'btn small', 'aria-label': 'Carte précédente', onClick: () => { stop(); go(state.step - 1); } }, '◀'),
       autoBtn,
-      h('button', { class: 'btn small', 'aria-label': 'Carte suivante', onClick: () => { stopAuto(); go(st.step + 1); } }, '▶'),
+      h('button', { class: 'btn small', 'aria-label': 'Carte suivante', onClick: () => { stop(); go(state.step + 1); } }, '▶'),
       h('button', {
         class: 'btn small', 'aria-label': 'Pli suivant',
-        onClick: () => { stopAuto(); go(st.step % 4 === 0 ? st.step + 4 : Math.ceil(st.step / 4) * 4); },
+        onClick: () => { stop(); go(state.step % 4 === 0 ? state.step + 4 : Math.ceil(state.step / 4) * 4); },
       }, '⏭'));
     autoBtn.addEventListener('click', () => {
-      if (st.timer) { stopAuto(); render(); return; }
-      if (st.step >= 32) st.step = 0;
-      st.timer = setInterval(() => {
-        if (st.step >= 32) { stopAuto(); render(); return; }
-        go(st.step + 1);
+      if (timer) { stop(); render(); return; }
+      if (state.step >= 32) state.step = 0;
+      timer = setInterval(() => {
+        if (state.step >= 32) { stop(); render(); return; }
+        go(state.step + 1);
       }, AUTO_DELAY);
       render();
     });
     wrap.append(table, counter, controls, score, handsEl);
 
     function render() {
-      const rs = replayState(r, st.step);
-      autoBtn.textContent = st.timer ? '⏸' : '⏯';
+      const rs = replayState(r, state.step);
+      autoBtn.textContent = timer ? '⏸' : '⏯';
       // places autour de la table
       for (let s = 0; s < 4; s++) {
         const rel = (s - mySeat + 4) % 4;
@@ -158,10 +173,18 @@ export function openReview(history, index, { names, mySeat }) {
       }
       // compteur et score
       clear(counter);
-      if (st.step === 0) counter.append('Début de la manche : ', h('b', null, names[(r.dealer + 1) % 4]), ' entame.');
+      if (divergeStep !== null) {
+        counter.append(h('div', { class: `rv-phase ${state.step > divergeStep ? 'win' : ''}` },
+          state.step > divergeStep ? '✓ Partie gagnante (cartes sur table)' : 'Partie réelle'));
+      }
+      if (state.step === 0) counter.append('Début de la manche : ', h('b', null, names[(r.dealer + 1) % 4]), ' entame.');
       else {
         counter.append(`Pli ${rs.trickIndex + 1}/8 · carte ${rs.trick.length}/4`);
         if (rs.complete) counter.append(h('span', { class: 'rv-won' }, ` — ${names[rs.winner]} remporte ${rs.trickPoints} pts`));
+      }
+      if (divergeStep !== null && state.step === divergeStep + 1 && realCards) {
+        counter.append(h('div', { class: 'rv-fix' }, '← ', h('b', null, renderBidText(cardLabel(rs.last.card))),
+          ' au lieu de ', renderBidText(cardLabel(realCards[divergeStep])), ' : c\'est ici que la manche a basculé.'));
       }
       clear(score);
       const won = [rs.tricksWon[us] + rs.tricksWon[us + 2], rs.tricksWon[1 - us] + rs.tricksWon[3 - us]];
@@ -175,6 +198,63 @@ export function openReview(history, index, { names, mySeat }) {
       }
     }
     render();
+    return wrap;
+  }
+
+  /** La manche était-elle gagnable ? (min-max cartes sur table, dans le Worker) */
+  function analysisTab(r) {
+    const wrap = h('div', { class: 'rv-analysis' });
+    const usTakers = r.contract.team === us;
+    const goal = usTakers ? 'réussir votre contrat' : 'faire chuter le contrat adverse';
+    wrap.append(h('p', { class: 'muted small' },
+      'Analyse « cartes sur table » : chaque joueur voit les quatre mains et joue parfaitement. ',
+      'Elle dit si la manche pouvait être gagnée en théorie ; en partie réelle, on ne voit pas le jeu des adversaires.'));
+    if (!r.tricks || r.tricks.length < 8) { wrap.append(noTricks()); return wrap; }
+    const box = h('div', { class: 'rv-result pending' }, h('div', { class: 'spinner small' }), 'Analyse de toutes les façons de jouer la donne…');
+    wrap.append(box);
+    let byRecord = analysisCache.get(r);
+    if (!byRecord) { byRecord = new Map(); analysisCache.set(r, byRecord); }
+    let promise = byRecord.get(mySeat);
+    if (!promise) { promise = analyzeRoundAsync(r, mySeat); byRecord.set(mySeat, promise); }
+    promise.then((a) => {
+      if (!wrap.isConnected) return;
+      clear(box);
+      if (a.undetermined) {
+        box.className = 'rv-result';
+        box.append(h('b', null, 'Analyse trop longue'), ' : impossible de conclure pour cette donne.');
+        return;
+      }
+      if (!a.winnable) {
+        box.className = 'rv-result no';
+        box.append(h('div', { class: 'rv-verdict' }, 'Non'),
+          `Même en jouant parfaitement, cartes sur table, votre équipe ne pouvait pas ${goal} : la manche était perdue dès la donne.`);
+        if (!a.lost) box.append(h('div', { class: 'small' }, 'Vous l\'avez pourtant gagnée : les adversaires n\'ont pas trouvé le jeu parfait.'));
+      } else if (!a.lost) {
+        box.className = 'rv-result yes';
+        box.append(h('div', { class: 'rv-verdict' }, 'Oui'), `Cartes sur table, votre équipe pouvait ${goal}, et elle l'a fait.`);
+      } else {
+        box.className = 'rv-result yes';
+        const m = a.mistake;
+        box.append(h('div', { class: 'rv-verdict' }, 'Oui !'),
+          `Cartes sur table, votre équipe pouvait ${goal}.`,
+          m ? h('div', { class: 'rv-mistake' },
+            `La manche a basculé au pli ${m.trick} : ${m.seat === mySeat ? 'vous avez' : `${names[m.seat]} (${role(m.seat)}) a`} joué `,
+            h('b', null, renderBidText(cardLabel(m.card))), ' ; il fallait jouer ',
+            h('b', null, renderBidText(m.alternatives.map(cardLabel).join(' ou '))), '.') : null);
+        if (a.line) {
+          wrap.append(h('h3', null, 'Rejeu de la partie gagnante'),
+            h('p', { class: 'muted small' }, 'Les cartes sont celles de la partie réelle jusqu\'au coup décisif, puis votre équipe joue le jeu gagnant ; les adversaires jouent comme les robots.'));
+          const real = r.tricks.flatMap((t) => t.cards.map((x) => x.card));
+          wrap.append(replayView(a.line, { state: { step: m ? m.step : 0 }, divergeStep: m ? m.step : null, realCards: real }));
+        }
+      }
+      box.append(h('div', { class: 'muted small rv-stats' }, `${a.nodes.toLocaleString('fr-FR')} positions examinées en ${a.ms} ms`));
+    }).catch((e) => {
+      if (!wrap.isConnected) return;
+      clear(box);
+      box.className = 'rv-result';
+      box.append(`L'analyse a échoué : ${e.message}`);
+    });
     return wrap;
   }
 

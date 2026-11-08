@@ -1,5 +1,6 @@
 // Accès au calcul Monte-Carlo : dans un Web Worker si possible, sinon sur le fil principal (budget réduit).
 import { monteCarloPlay, heuristicPlay } from './ai.js';
+import { analyzeRound } from './solver.js';
 
 let worker = null;
 let broken = false;
@@ -49,4 +50,21 @@ export function monteCarloAsync(ctx, opts = {}) {
     pending.set(id, { resolve, reject, timer });
     w.postMessage({ id, ctx: plain, opts });
   }).catch(fallback);
+}
+
+/** Analyse cartes sur table d'une manche (voir analyzeRound), dans le Worker si possible. */
+export function analyzeRoundAsync(record, mySeat, opts = {}) {
+  const plain = JSON.parse(JSON.stringify(record));
+  const direct = () => analyzeRound(plain, mySeat, opts);
+  const w = getWorker();
+  if (!w) return Promise.resolve().then(direct);
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      resolve({ undetermined: true, timeout: true });
+    }, 60000);
+    pending.set(id, { resolve, reject, timer });
+    w.postMessage({ id, type: 'solve', record: plain, mySeat, opts });
+  }).catch(direct);
 }

@@ -1,6 +1,6 @@
 // Accès au calcul Monte-Carlo : dans un Web Worker si possible, sinon sur le fil principal (budget réduit).
 import { monteCarloPlay, heuristicPlay } from './ai.js';
-import { analyzeRound } from './solver.js';
+import { analyzeRound, bestScores } from './solver.js';
 
 let worker = null;
 let broken = false;
@@ -66,5 +66,22 @@ export function analyzeRoundAsync(record, mySeat, opts = {}) {
     }, 60000);
     pending.set(id, { resolve, reject, timer });
     w.postMessage({ id, type: 'solve', record: plain, mySeat, opts });
+  }).catch(direct);
+}
+
+/** Score maximal cartes sur table pour un atout donné (voir bestScores), dans le Worker si possible. */
+export function bestScoresAsync(record, mySeat, trump, opts = {}) {
+  const plain = JSON.parse(JSON.stringify(record));
+  const direct = () => bestScores(plain, mySeat, trump, { nodeLimit: 1e6, ...opts });
+  const w = getWorker();
+  if (!w) return Promise.resolve().then(direct);
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      resolve({ trump, us: null, them: null, timeout: true });
+    }, 120000);
+    pending.set(id, { resolve, reject, timer });
+    w.postMessage({ id, type: 'scores', record: plain, mySeat, trump, opts });
   }).catch(direct);
 }

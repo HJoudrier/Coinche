@@ -108,3 +108,50 @@ test('analyse d\'une manche perdue : ligne gagnante légale et coup décisif de 
   assert.ok(analysed > 20);
   assert.ok(winnable > 0, 'au moins une manche perdue était gagnable');
 });
+
+/** Points maximaux des preneurs par recherche exhaustive (référence). */
+function bruteMax(r, steps, k) {
+  const solver = createSolver(r);
+  const team = r.contract.team;
+  const rec = (line) => {
+    if (line.length === 32) {
+      return stepsToTricks(line, r.contract.trump).filter((t) => teamOf(t.winner) === team).reduce((s, t) => s + t.points, 0);
+    }
+    const { seat, cards } = solver.legalAt(line, line.length);
+    const vals = cards.map((c) => rec([...line, { seat, card: c }]));
+    return teamOf(seat) === team ? Math.max(...vals) : Math.min(...vals);
+  };
+  return rec(steps.slice(0, k));
+}
+
+test('score maximal (alpha-bêta) = recherche exhaustive en fin de partie', () => {
+  let n = 0;
+  for (const r of rounds(13, 12)) {
+    const steps = replaySteps(r);
+    for (const k of [24, 21, 19]) {
+      assert.equal(createSolver(r).maxTakerPointsAt(steps, k), bruteMax(r, steps, k), `manche ${r.round}, après ${k} cartes`);
+      n++;
+    }
+  }
+  assert.ok(n >= 30);
+});
+
+test('score maximal cohérent avec le solveur oui/non', async () => {
+  const { bestScores } = await import('../js/solver.js');
+  for (const r of rounds(17, 6)) {
+    const full = createSolver(r).maxTakerPointsAt([], 0);
+    assert.ok(full >= 0 && full <= 162);
+    // les preneurs atteignent un seuil x si et seulement si x <= score maximal
+    let checked = 0;
+    for (const x of [full - 1, full, full + 1, 82, 100, 120]) {
+      if (x < 82 || x > 162) continue;
+      // contrat fictif dont le besoin vaut exactement x
+      const rr = { ...r, contract: { ...r.contract, value: x }, beloteTeam: null };
+      assert.equal(createSolver(rr).takersWinAt([], 0), x <= full, `seuil ${x}, maximum ${full}`);
+      checked++;
+    }
+    assert.ok(checked >= 3);
+    const b = bestScores(r, 0, r.contract.trump);
+    assert.equal(b.us + b.them, 162);
+  }
+});

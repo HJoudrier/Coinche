@@ -46,6 +46,8 @@ export function createSolver(record, { nodeLimit = 5e6 } = {}) {
     bySuit[suit[i]].push(i);
   });
   for (const l of bySuit) l.sort((a, b) => str[a] - str[b]);
+  const posInSuit = new Int8Array(32);
+  for (const l of bySuit) l.forEach((c, i) => { posInSuit[c] = i; });
 
   // c bat-elle la carte maîtresse `best`, la couleur demandée étant `lead` ?
   const beats = (c, best, lead) => {
@@ -107,35 +109,38 @@ export function createSolver(record, { nodeLimit = 5e6 } = {}) {
   }
 
   /** Coups à essayer, ordonnés ; les cartes équivalentes (voisines, mêmes points) ne sont gardées qu'une fois. */
-  function orderedMoves(seat) {
+  function orderedMoves(seat, preferred = -1) {
     const legal = legalMask(seat);
     const list = [];
+    const mine = hands[seat];
+    let inPlay = hands[0] | hands[1] | hands[2] | hands[3];
+    for (let k = 0; k < tLen; k++) inPlay |= (1 << tCard[k]);
+    const leadSuit = tLen ? suit[tCard[0]] : -1;
     for (let x = legal; x; x &= x - 1) {
       const i = 31 - Math.clz32(x & -x);
       // équivalence : la carte immédiatement plus forte de la même couleur, dans la même main,
       // avec les mêmes points et sans carte encore en jeu entre les deux
       const order = bySuit[suit[i]];
-      const pos = order.indexOf(i);
       let skip = false;
-      for (let j = pos + 1; j < order.length; j++) {
-        const c = order[j];
-        const inHand = hands[seat] & (1 << c);
-        if (inHand) { skip = (legal & (1 << c)) !== 0 && pts[c] === pts[i]; break; }
-        const elsewhere = (hands[0] | hands[1] | hands[2] | hands[3]) & (1 << c);
-        let inTrick = false;
-        for (let k = 0; k < tLen; k++) if (tCard[k] === c) inTrick = true;
-        if (elsewhere || inTrick) break;
+      for (let j = posInSuit[i] + 1; j < order.length; j++) {
+        const cb = 1 << order[j];
+        if (mine & cb) { skip = (legal & cb) !== 0 && pts[order[j]] === pts[i]; break; }
+        if (inPlay & cb) break;
       }
       if (skip) continue;
       let score;
-      const lead = tLen ? suit[tCard[0]] : suit[i];
-      const wins = !tLen || beats(i, winCard, lead);
+      const wins = !tLen || beats(i, winCard, leadSuit);
       if (wins) score = 100 + pts[i] + str[i];
       else score = -pts[i] - str[i] * 0.1;
       list.push([score, i]);
     }
     list.sort((a, b) => b[0] - a[0]);
-    return list.map((x) => x[1]);
+    const out = list.map((x) => x[1]);
+    if (preferred >= 0) {
+      const i = out.indexOf(preferred);
+      if (i > 0) { out.splice(i, 1); out.unshift(preferred); }
+    }
+    return out;
   }
 
   function node(turn) {
@@ -213,6 +218,94 @@ export function createSolver(record, { nodeLimit = 5e6 } = {}) {
     return r;
   }
 
+  // ---- min-max numérique : points de cartes que les preneurs peuvent s'assurer ----
+  const ttv = new Map(); // position en fin de pli -> {lo, hi} bornes des points à venir
+
+  function valueNode(turn, alpha, beta) {
+    allNodes++;
+    if (++nodes > nodeLimit) throw ABORT;
+    if (tLen === 0) {
+      if (tricksDone === 8) return 0;
+      const upper = remPts + LAST_TRICK_BONUS;
+      if (upper <= alpha) return upper;
+      const key = `${hands[0]},${hands[1]},${hands[2]},${hands[3]},${turn}`;
+      const e = ttv.get(key);
+      let lo = 0;
+      let hi = upper;
+      let pref = -1;
+      if (e) {
+        lo = e.lo; hi = e.hi; pref = e.move;
+        if (lo === hi || lo >= beta) return lo;
+        if (hi <= alpha) return hi;
+        if (lo > alpha) alpha = lo;
+        if (hi < beta) beta = hi;
+      }
+      const a0 = alpha;
+      const b0 = beta;
+      const v = valueSearch(turn, alpha, beta, pref);
+      if (v <= a0) hi = Math.min(hi, v);
+      else if (v >= b0) lo = Math.max(lo, v);
+      else { lo = v; hi = v; }
+      ttv.set(key, { lo, hi, move: lastBest });
+      return v;
+    }
+    return valueSearch(turn, alpha, beta, -1);
+  }
+
+  let lastBest = -1;
+  function valueSearch(turn, alpha, beta, preferred) {
+    const maximizing = teamOf(turn) === takerTeam;
+    let best = maximizing ? -1 : 1e9;
+    let bestMove = -1;
+    for (const c of orderedMoves(turn, preferred)) {
+      const v = playAndValue(turn, c, alpha, beta);
+      if (maximizing ? v > best : v < best) { best = v; bestMove = c; }
+      if (maximizing) { if (best > alpha) alpha = best; } else if (best < beta) beta = best;
+      if (alpha >= beta) break;
+    }
+    lastBest = bestMove;
+    return best;
+  }
+
+  /** Joue c, renvoie les points des preneurs à venir (pli en cours compris), puis restaure. */
+  function playAndValue(turn, c, alpha, beta) {
+    const bit = 1 << c;
+    const prevWinSeat = winSeat;
+    const prevWinCard = winCard;
+    hands[turn] &= ~bit;
+    remPts -= pts[c];
+    tSeat[tLen] = turn;
+    tCard[tLen] = c;
+    if (tLen === 0 || beats(c, winCard, suit[tCard[0]])) { winSeat = turn; winCard = c; }
+    tLen++;
+    let v;
+    if (tLen < 4) {
+      v = valueNode((turn + 1) & 3, alpha, beta);
+    } else {
+      let p = 0;
+      for (let k = 0; k < 4; k++) p += pts[tCard[k]];
+      tricksDone++;
+      if (tricksDone === 8) p += LAST_TRICK_BONUS;
+      const w = winSeat;
+      const gain = teamOf(w) === takerTeam ? p : 0;
+      const savedCards = tCard.slice();
+      const savedSeats = tSeat.slice();
+      tLen = 0;
+      winSeat = -1;
+      winCard = -1;
+      v = gain + (tricksDone === 8 ? 0 : valueNode(w, alpha - gain, beta - gain));
+      for (let k = 0; k < 4; k++) { tCard[k] = savedCards[k]; tSeat[k] = savedSeats[k]; }
+      tLen = 4;
+      tricksDone--;
+    }
+    tLen--;
+    winSeat = prevWinSeat;
+    winCard = prevWinCard;
+    hands[turn] |= bit;
+    remPts += pts[c];
+    return v;
+  }
+
   /** Place la position « après k cartes de la séquence `steps` ». Renvoie le joueur au trait. */
   function setPosition(steps, k) {
     for (let s = 0; s < 4; s++) {
@@ -285,8 +378,40 @@ export function createSolver(record, { nodeLimit = 5e6 } = {}) {
     return { seat: turn, moves: out };
   }
 
+  let lastBounds = null; // fourchette [min, max] connue si le calcul est interrompu
+  // points des cartes déjà posées dans le pli en cours (pour la borne haute)
+  function tLenPoints() {
+    let p = 0;
+    for (let i = 0; i < tLen; i++) p += pts[tCard[i]];
+    return p;
+  }
+
+  /** Points de cartes (10 de der compris) que les preneurs peuvent s'assurer depuis la position après k cartes. */
+  function maxTakerPointsAt(steps, k, guess = 81) {
+    const turn = setPosition(steps, k);
+    if (k >= 32) return takerPts;
+    try {
+      // MTD(f) : recherches à fenêtre nulle successives, la table de transposition garde les bornes
+      let g = Math.max(0, Math.min(162, guess - takerPts));
+      lastBounds = [takerPts, takerPts + remPts + LAST_TRICK_BONUS + tLenPoints()];
+      let lower = 0;
+      let upper = remPts + LAST_TRICK_BONUS + tLenPoints();
+      while (lower < upper) {
+        const beta = g === lower ? g + 1 : g;
+        g = valueNode(turn, beta - 1, beta);
+        if (g < beta) upper = g; else lower = g;
+        lastBounds = [takerPts + lower, takerPts + upper];
+      }
+      return takerPts + g;
+    } catch (e) {
+      if (e === ABORT) return null;
+      throw e;
+    }
+  }
+
   return {
     takersWinAt,
+    maxTakerPointsAt,
     movesAt,
     turnAt: (steps, k) => setPosition(steps, k),
     legalAt(steps, k) {
@@ -297,6 +422,7 @@ export function createSolver(record, { nodeLimit = 5e6 } = {}) {
     },
     goal: { mode, need },
     get nodes() { return allNodes; },
+    get bounds() { return lastBounds; },
     resetNodes() { nodes = 0; },
   };
 }
@@ -380,4 +506,72 @@ export function analyzeRound(record, mySeat, { nodeLimit = 5e6 } = {}) {
     mistake,
     line: { ...record, tricks, cardPoints: pts, startStep: k },
   });
+}
+
+/** Estimation rapide : la donne jouée par l'algorithme des robots (sert de point de départ au min-max). */
+function playoutPoints(record, team) {
+  const trump = record.contract.trump;
+  const hands = record.hands.map((x) => x.slice());
+  const tricks = [];
+  let trick = [];
+  let turn = (record.dealer + 1) % 4;
+  let p = 0;
+  while (tricks.length < 8) {
+    const card = heuristicPlay({ seat: turn, hand: hands[turn], trick, tricks, contract: record.contract }).card;
+    hands[turn].splice(hands[turn].indexOf(card), 1);
+    trick.push({ seat: turn, card });
+    if (trick.length === 4) {
+      const w = trickWinnerSeat(trick, trump);
+      const v = trickPoints(trick, trump) + (tricks.length === 7 ? LAST_TRICK_BONUS : 0);
+      if (teamOf(w) === team) p += v;
+      tricks.push({ leader: trick[0].seat, cards: trick, winner: w, points: v });
+      trick = [];
+      turn = w;
+    } else turn = (turn + 1) % 4;
+  }
+  return p;
+}
+
+/** Contrat le plus haut réalisable avec ces points (règle des 82, belote), ou null. */
+export function bestContractFor(points, beloteBonus, capot) {
+  if (capot) return CAPOT;
+  if (points === null || points < 82) return null;
+  return Math.min(160, Math.floor((points + beloteBonus) / 10) * 10);
+}
+
+/**
+ * Score maximal cartes sur table si l'atout avait été `trump` (entame inchangée) :
+ * points de cartes que l'équipe de `mySeat` peut s'assurer ; l'autre équipe obtient le reste (162 au total).
+ */
+export function bestScores(record, mySeat, trump, { nodeLimit = 4e6 } = {}) {
+  const t0 = Date.now();
+  const us = teamOf(mySeat);
+  const synth = (team, seat, value) => ({
+    ...record, contract: { seat, team, value, trump, mult: 1 }, beloteTeam: null,
+  });
+  const solver = createSolver(synth(us, mySeat, 80), { nodeLimit });
+  const ptsUs = solver.maxTakerPointsAt([], 0, playoutPoints(synth(us, mySeat, 80), us));
+  let holder = -1;
+  if (SUITS.includes(trump)) {
+    holder = [0, 1, 2, 3].find((s) => record.hands[s].includes(`K${trump}`) && record.hands[s].includes(`Q${trump}`));
+    if (holder === undefined) holder = -1;
+  }
+  const beloteTeam = holder >= 0 ? teamOf(holder) : null;
+  let capotUs = false;
+  let capotThem = false;
+  if (ptsUs === 162) capotUs = createSolver(synth(us, mySeat, CAPOT), { nodeLimit }).takersWinAt([], 0) === true;
+  if (ptsUs === 0) capotThem = createSolver(synth(1 - us, (mySeat + 1) % 4, CAPOT), { nodeLimit }).takersWinAt([], 0) === true;
+  const ptsThem = ptsUs === null ? null : 162 - ptsUs;
+  const range = ptsUs === null && solver.bounds ? solver.bounds : null;
+  return {
+    trump,
+    us: ptsUs,
+    them: ptsThem,
+    range, // si le calcul a été interrompu : [min, max] des points de notre équipe
+    beloteTeam,
+    bestUs: bestContractFor(ptsUs, beloteTeam === us ? 20 : 0, capotUs),
+    bestThem: bestContractFor(ptsThem, beloteTeam === 1 - us ? 20 : 0, capotThem),
+    nodes: solver.nodes,
+    ms: Date.now() - t0,
+  };
 }

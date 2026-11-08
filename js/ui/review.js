@@ -1,18 +1,22 @@
 // Écran « Revoir la donne » : mains de départ, enchères, plis, rejeu pas à pas et analyse cartes sur table.
-import { h, clear, cardEl, openPanel, segmented } from './dom.js';
+import {
+  h, clear, append, cardEl, openPanel, segmented,
+} from './dom.js';
 import { renderBidText, auctionListEl } from './render.js';
 import {
-  teamOf, partnerOf, sortHand, cardLabel,
+  teamOf, partnerOf, sortHand, cardLabel, SUIT_SYMBOL, SUIT_NAME,
 } from '../cards.js';
-import { contractLabel } from '../auction.js';
+import { contractLabel, bidLabel } from '../auction.js';
 import { explainAuction } from '../reading.js';
 import { replayState } from '../replay.js';
-import { analyzeRoundAsync } from '../mcclient.js';
+import { analyzeRoundAsync, bestScoresAsync } from '../mcclient.js';
 
 const REL = ['bottom', 'right', 'top', 'left'];
 const AUTO_DELAY = 900;
 // analyses déjà lancées (par manche et par joueur)
 const analysisCache = new WeakMap();
+const scoresCache = new WeakMap();
+const SCORE_TRUMPS = ['H', 'D', 'C', 'S', 'NT', 'AT'];
 
 /**
  * @param {object[]} history  enregistrements des manches de la partie
@@ -201,6 +205,61 @@ export function openReview(history, index, { names, mySeat, tab = 'hands' }) {
     return wrap;
   }
 
+  /** Score maximal cartes sur table pour chaque atout possible (min-max alpha-bêta, dans le Worker). */
+  function scoresSection(r) {
+    const sec = h('div', { class: 'rv-scores' });
+    const leader = (r.dealer + 1) % 4;
+    sec.append(h('h3', null, 'Score maximal par atout'),
+      h('p', { class: 'muted small' },
+        `Points de cartes (10 de der compris) que chaque équipe peut s'assurer cartes sur table si cet atout avait été choisi, avec la même entame (${names[leader]}). `,
+        'Le meilleur contrat tient compte de la règle des 82 points et de la belote.'));
+    const tbody = h('tbody');
+    sec.append(h('table', { class: 'tbl rv-scores-tbl' },
+      h('thead', null, h('tr', null, h('th', null, 'Atout'), h('th', { class: 'us' }, 'Nous'), h('th', { class: 'them' }, 'Eux'), h('th', null, 'Meilleur contrat'))),
+      tbody));
+    let byRecord = scoresCache.get(r);
+    if (!byRecord) { byRecord = new Map(); scoresCache.set(r, byRecord); }
+    // l'atout joué d'abord, puis les autres
+    const order = [r.contract.trump, ...SCORE_TRUMPS.filter((t) => t !== r.contract.trump)];
+    const rows = {};
+    for (const t of SCORE_TRUMPS) {
+      const played = t === r.contract.trump;
+      rows[t] = h('tr', { class: played ? 'played' : '' },
+        h('td', null, h('span', { class: 'rv-trump' }, renderBidText(SUIT_SYMBOL[t])), ' ', h('span', { class: 'small muted' }, SUIT_NAME[t]),
+          played ? h('div', { class: 'small rv-played' }, `joué : ${bidLabel(r.contract.value, t)}`) : null),
+        h('td', null, '…'), h('td', null, '…'), h('td', { class: 'small muted' }, 'calcul…'));
+      tbody.append(rows[t]);
+    }
+    const fill = (t, b) => {
+      const tr = rows[t];
+      if (!tr.isConnected && !sec.isConnected) return;
+      const cells = tr.children;
+      const bel = (team) => (b.beloteTeam === team ? h('span', { class: 'small muted' }, ' +20 B') : null);
+      clear(cells[1]); clear(cells[2]); clear(cells[3]);
+      if (b.us === null) {
+        const rg = b.range;
+        cells[1].append(rg ? `${rg[0]}–${rg[1]}` : '?');
+        cells[2].append(rg ? `${162 - rg[1]}–${162 - rg[0]}` : '?');
+        cells[3].append('calcul trop long');
+        return;
+      }
+      append(cells[1], [h('b', null, b.us), bel(us)]);
+      append(cells[2], [h('b', null, b.them), bel(1 - us)]);
+      cells[3].className = '';
+      if (b.bestUs) cells[3].append(h('span', { class: 'us' }, 'Nous : '), renderBidText(bidLabel(b.bestUs, t)));
+      else if (b.bestThem) cells[3].append(h('span', { class: 'them' }, 'Eux : '), renderBidText(bidLabel(b.bestThem, t)));
+      else cells[3].append(h('span', { class: 'muted' }, 'aucun'));
+    };
+    (async () => {
+      for (const t of order) {
+        let p = byRecord.get(`${mySeat}:${t}`);
+        if (!p) { p = bestScoresAsync(r, mySeat, t); byRecord.set(`${mySeat}:${t}`, p); }
+        try { fill(t, await p); } catch (e) { console.error(e); }
+      }
+    })();
+    return sec;
+  }
+
   /** La manche était-elle gagnable ? (min-max cartes sur table, dans le Worker) */
   function analysisTab(r) {
     const wrap = h('div', { class: 'rv-analysis' });
@@ -212,6 +271,8 @@ export function openReview(history, index, { names, mySeat, tab = 'hands' }) {
     if (!r.tricks || r.tricks.length < 8) { wrap.append(noTricks()); return wrap; }
     const box = h('div', { class: 'rv-result pending' }, h('div', { class: 'spinner small' }), 'Analyse de toutes les façons de jouer la donne…');
     wrap.append(box);
+    const replayHolder = h('div');
+    wrap.append(replayHolder, scoresSection(r));
     let byRecord = analysisCache.get(r);
     if (!byRecord) { byRecord = new Map(); analysisCache.set(r, byRecord); }
     let promise = byRecord.get(mySeat);
@@ -242,10 +303,10 @@ export function openReview(history, index, { names, mySeat, tab = 'hands' }) {
             h('b', null, renderBidText(cardLabel(m.card))), ' ; il fallait jouer ',
             h('b', null, renderBidText(m.alternatives.map(cardLabel).join(' ou '))), '.') : null);
         if (a.line) {
-          wrap.append(h('h3', null, 'Rejeu de la partie gagnante'),
+          replayHolder.append(h('h3', null, 'Rejeu de la partie gagnante'),
             h('p', { class: 'muted small' }, 'Les cartes sont celles de la partie réelle jusqu\'au coup décisif, puis votre équipe joue le jeu gagnant ; les adversaires jouent comme les robots.'));
           const real = r.tricks.flatMap((t) => t.cards.map((x) => x.card));
-          wrap.append(replayView(a.line, { state: { step: m ? m.step : 0 }, divergeStep: m ? m.step : null, realCards: real }));
+          replayHolder.append(replayView(a.line, { state: { step: m ? m.step : 0 }, divergeStep: m ? m.step : null, realCards: real }));
         }
       }
       box.append(h('div', { class: 'muted small rv-stats' }, `${a.nodes.toLocaleString('fr-FR')} positions examinées en ${a.ms} ms`));

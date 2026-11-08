@@ -39,6 +39,8 @@ L'interface est pensée d'abord pour le téléphone.
 - **« Pouvait-on gagner cette manche ? »** après une manche perdue : analyse min-max « cartes sur table » (chaque joueur voit les 4 mains).
   - La recherche coupe une branche dès que le contrat est assuré ou perdu, avec une table de transposition et l'élagage des cartes équivalentes. Une donne se résout en quelques dizaines de millisecondes en médiane.
   - Elle répond Oui ou Non. Si la manche était gagnable, elle indique le coup décisif (pli, joueur, carte jouée, cartes qui gagnaient) et propose le rejeu de la partie gagnante.
+- **Score maximal par atout** dans l'onglet Analyse, pour ♥ ♦ ♣ ♠, sans atout et tout atout : points de cartes que chaque équipe peut s'assurer cartes sur table, et meilleur contrat réalisable (règle des 82, belote, capot).
+  Le calcul utilise un min-max alpha-bêta (MTD(f), table de transposition, meilleur coup en premier), en arrière-plan.
 - **Revoir la donne** depuis le résumé de fin de manche ou les statistiques, pour chaque manche de la partie.
   On y trouve les mains de départ, les enchères avec leur signification, les 8 plis (qui entame, qui remporte, cumul des points) et un rejeu pas à pas sur la table, en manuel ou en lecture automatique.
 - **Statistiques** de la partie sur toutes les manches (courbe des scores, équipes, joueurs, atouts) et historique de toutes les parties jouées sur l'appareil.

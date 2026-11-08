@@ -635,3 +635,12 @@ details.hands { font-size: 0.88rem; }
 .rv-phase { font-size: 0.8rem; color: var(--text-2); }
 .rv-phase.win { color: var(--ok); font-weight: 700; }
 .rv-fix { font-size: 0.85rem; color: var(--accent); margin-top: 2px; }
+
+.rv-scores h3 { margin: 14px 0 4px; }
+.rv-scores-tbl td { vertical-align: middle; }
+.rv-scores-tbl td:first-child { white-space: nowrap; }
+.rv-scores-tbl tr.played td { background: rgba(242, 193, 78, 0.08); }
+.rv-trump { font-size: 1.1rem; font-weight: 800; }
+.rv-played { color: var(--accent); }
+.rv-scores-tbl td .us { color: #8dbcf5; }
+.rv-scores-tbl td .them { color: #f3a27c; }

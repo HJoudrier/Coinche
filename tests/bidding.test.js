@@ -62,13 +62,29 @@ test('soutien du partenaire : +10 par carte utile', () => {
   assert.match(a2.explanation, /Rien pour soutenir/);
 });
 
-test('surenchère à 90 sur un 80 adverse, pas au-delà', () => {
+test('surenchère : jusqu\'à 20 au-dessus de son ouverture, pas au-delà', () => {
   const hand = ['JH', '8H', '7H', 'TH', '7S', '8S', '9C', '8D'];
-  // Est (1) ouvre 80 ♠, Nord et Ouest passent
-  const v = viewFor(hand, 0, [[1, bid(80, 'S')], [2, pass], [3, pass]], 0);
-  assert.deepEqual(chooseBid(v), bid(90, 'H'));
-  const v2 = viewFor(hand, 0, [[1, bid(90, 'S')], [2, pass], [3, pass]], 0);
-  assert.equal(chooseBid(v2).type, 'pass');
+  // Est (1) ouvre 80 ♠, Nord et Ouest passent : 90 ♥
+  assert.deepEqual(chooseBid(viewFor(hand, 0, [[1, bid(80, 'S')], [2, pass], [3, pass]], 0)), bid(90, 'H'));
+  // sur 90 ♠ : 100 ♥ (ouverture 80 + 20)
+  assert.deepEqual(chooseBid(viewFor(hand, 0, [[1, bid(90, 'S')], [2, pass], [3, pass]], 0)), bid(100, 'H'));
+  // sur 100 ♠ : passe
+  assert.equal(chooseBid(viewFor(hand, 0, [[1, bid(100, 'S')], [2, pass], [3, pass]], 0)).type, 'pass');
+});
+
+test('ouvertures courtes : valet troisième avec un as, 9 quatrième, 9 troisième avec deux as', () => {
+  assert.deepEqual(chooseBid(viewFor(['JH', '8H', '7H', 'AS', '8S', '9C', '8D', '7D'], 0)), bid(80, 'H'));
+  assert.equal(chooseBid(viewFor(['JH', '8H', '7H', 'KS', '8S', '9C', '8D', '7D'], 0)).type, 'pass');
+  assert.deepEqual(chooseBid(viewFor(['9H', '8H', '7H', 'QH', '8S', '9C', '8D', '7D'], 0)), bid(80, 'H'));
+  assert.deepEqual(chooseBid(viewFor(['9H', '8H', '7H', 'AS', 'AC', '9C', '8D', '7D'], 0)), bid(80, 'H'));
+  assert.equal(chooseBid(viewFor(['9H', '8H', '7H', 'AS', 'KC', '9C', '8D', '7D'], 0)).type, 'pass');
+});
+
+test('les as qui ont servi à ouvrir ne sont pas réannoncés au second tour', () => {
+  // 9 troisième + 2 as : ouverture 80 ; Nord soutient, Sud ne remonte pas pour ces deux as
+  const hand = ['9H', '8H', '7H', 'AS', 'AC', '9C', '8D', '7D'];
+  const v = viewFor(hand, 0, [[0, bid(80, 'H')], [1, pass], [2, bid(90, 'H')], [3, pass]]);
+  assert.equal(chooseBid(v).type, 'pass');
 });
 
 test('en concurrence, on peut compter ses as', () => {

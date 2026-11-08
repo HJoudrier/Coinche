@@ -26,7 +26,7 @@ function openingMeaning(v, T, leads = false) {
   }
   if (v === CAPOT) return `capot : compte faire tous les plis à ${S(T)}`;
   if (v === GENERALE) return `générale : compte faire seul tous les plis à ${S(T)}`;
-  if (v <= 80) return `valet ou 9 de ${S(T)} avec au moins 4 atouts (ou valet et 9 avec 3 atouts)`;
+  if (v <= 80) return `valet ou 9 de ${S(T)} avec au moins 4 atouts, ou 3 atouts et des as à côté (ou valet et 9 avec 3 atouts)`;
   if (v === 90) return `valet et 9 de ${S(T)}, au moins 4 atouts`;
   if (v === 100) return `valet, 9 et as de ${S(T)} (4 atouts), ou valet et 9 avec 5 atouts`;
   if (v <= 130) return `barrage : au moins 6 atouts à ${S(T)} avec le valet${v >= 120 ? ' et le 9' : ''}`;

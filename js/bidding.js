@@ -1,11 +1,12 @@
 // Enchères par conventions (robots et conseils au joueur).
 //
 // 1re annonce dans une couleur = qualité de l'atout seulement (les as viennent plus tard) :
-//   80  : valet ou 9 (l'un des deux manque) avec au moins 4 atouts, ou valet et 9 avec 3 atouts
+//   80  : valet avec 4 atouts (3 avec un as à côté), 9 avec 4 atouts (3 avec deux as),
+//         ou valet et 9 avec 3 atouts
 //   90  : valet et 9 avec au moins 4 atouts
 //   100 : valet, 9 et as d'atout (4 atouts), ou valet et 9 avec 5 atouts
 //   110+: barrage avec 6 atouts ou plus dont le valet (120 avec le 9, 130 avec 7 atouts)
-// Surenchère sur un adversaire : jusqu'à « valeur d'ouverture + 10 ».
+// Surenchère sur un adversaire : jusqu'à « valeur d'ouverture + 20 » (+ les as).
 // Soutien du partenaire : +10 par carte utile (as, valet ou 9 d'atout), belote +20.
 // Second tour de l'ouvreur : +10 par as (belote +20).
 import {
@@ -100,15 +101,36 @@ export function teamNoTrumpTricks(hand, T, leads, partnerCards, partnerKn = null
 
 const cardWord = (c) => `${RANK_WORD[c[0]]} ${S(c[1])}`;
 
+/** Seuils des enchères (ajustés par des parties simulées avec l'algorithme de jeu des robots). */
+export const BID_TUNING = {
+  jMin: 4, // valet sans le 9 : atouts minimum pour ouvrir à 80
+  jShortAces: 1, // … ou valet troisième avec au moins tant d'as extérieurs (null = jamais)
+  nineMin: 4, // 9 sans le valet : atouts minimum
+  nineWithTrumpAce: 4, // 9 et as d'atout : atouts minimum
+  nineShortAces: 2, // 9 troisième avec au moins tant d'as extérieurs (null = jamais)
+  v9Min90: 4, // valet et 9 : atouts minimum pour 90
+  v9ShortMin: 3, // valet et 9 avec moins d'atouts : 80 à partir de
+  barrageMin: 6,
+  looseJ: 3, // dernière position : valet avec 3 atouts
+  looseNine: 4, // dernière position : 9 avec 4 atouts
+  supportLen: 0, // soutien : +10 avec au moins tant d'atouts du partenaire (0 = non)
+  competeStep: 20, // surenchère possible jusqu'à l'ouverture + ce pas (+ les as)
+  coinche: 5.5, // seuil de coinche (niveau moyen)
+  coincheHard: 5.2, // seuil de coinche (niveau difficile)
+  ntShift: 0, // sans atout / tout atout : décalage du barème des levées sûres (+1 = plus audacieux)
+  surcoinche: 30, // surcoinche si l'estimation dépasse le contrat d'au moins tant
+};
+
 /**
  * Valeur d'ouverture d'une main pour un atout, selon la convention, ou null.
  * Retourne {value, kind, text} ; text est rédigé à la 2e personne pour les conseils.
  * `leads` : le joueur entame la première levée (il parle en premier).
  */
-export function openingValue(hand, T, { loose = false, leads = false } = {}) {
+export function openingValue(hand, T, { loose = false, leads = false, tuning = BID_TUNING } = {}) {
+  const tu = tuning;
   if (T === 'NT' || T === 'AT') {
     const st = sureTricksNT(hand, T, leads);
-    const value = noTrumpValue(st.total);
+    const value = noTrumpValue(st.total + (tu.ntShift || 0));
     if (!value) return null;
     const name = T === 'NT' ? 'sans atout' : 'tout atout';
     let text = `${leads ? 'vous entamez la manche et ' : ''}vous avez ${st.total} levées sûres en ${name} (${describeTricks(st, T)})`;
@@ -116,24 +138,36 @@ export function openingValue(hand, T, { loose = false, leads = false } = {}) {
     return { value, kind: T === 'NT' ? 'SA' : 'TA', text, tricks: st.total };
   }
   const p = trumpProfile(hand, T);
-  if (p.J && p.n >= 6) {
-    const value = p.N ? (p.n >= 7 ? 130 : 120) : 110;
+  if (p.J && p.n >= tu.barrageMin) {
+    const value = p.N ? (p.n >= tu.barrageMin + 1 ? 130 : 120) : 110;
     return { value, kind: 'barrage', text: `vous avez ${p.n} atouts à ${S(T)} avec le valet${p.N ? ' et le 9' : ''}` };
   }
-  if (p.J && p.N && p.n >= 4) {
-    if (p.A || p.n >= 5) {
+  if (p.J && p.N && p.n >= tu.v9Min90) {
+    if (p.A || p.n >= tu.v9Min90 + 1) {
       return { value: 100, kind: 'V9+', text: `vous avez le valet, le 9${p.A ? ' et l\'as' : ''} de ${S(T)} (${p.n} atouts)` };
     }
     return { value: 90, kind: 'V9', text: `vous avez le valet et le 9 de ${S(T)} (${p.n} atouts)` };
   }
-  if (p.J && p.N && p.n >= 3) {
+  if (p.J && p.N && p.n >= tu.v9ShortMin) {
     return { value: 80, kind: 'V9court', text: `vous avez le valet et le 9 de ${S(T)}, mais seulement ${p.n} atouts` };
   }
-  if (p.J && (p.n >= 4 || (loose && p.n >= 3))) {
+  if (p.J && (p.n >= tu.jMin || (loose && p.n >= tu.looseJ))) {
     return { value: 80, kind: 'V', text: `vous avez le valet de ${S(T)} sans le 9, avec ${p.n} atouts` };
   }
-  if (p.N && (p.n >= 5 || (p.A && p.n >= 4) || (loose && p.n >= 4))) {
+  if (p.J && tu.jShortAces !== null && p.n >= tu.jMin - 1 && p.sideAces >= tu.jShortAces) {
+    return {
+      value: 80, kind: 'V', acesUsed: tu.jShortAces,
+      text: `vous avez le valet de ${S(T)} avec ${p.n} atouts et ${p.sideAces} as à côté`,
+    };
+  }
+  if (p.N && (p.n >= tu.nineMin || (p.A && p.n >= tu.nineWithTrumpAce) || (loose && p.n >= tu.looseNine))) {
     return { value: 80, kind: '9', text: `vous avez le 9 de ${S(T)} sans le valet, avec ${p.n} atouts` };
+  }
+  if (p.N && tu.nineShortAces !== null && p.n >= 3 && p.sideAces >= tu.nineShortAces) {
+    return {
+      value: 80, kind: '9', acesUsed: tu.nineShortAces,
+      text: `vous avez le 9 de ${S(T)} avec ${p.n} atouts et ${p.sideAces} as à côté`,
+    };
   }
   return null;
 }
@@ -160,13 +194,14 @@ export function usefulCards(hand, T) {
 }
 
 /** As montrés au second tour par l'ouvreur (+10 par as hors atout, as d'atout s'il n'a pas servi à l'ouverture, belote +20). */
-export function acesToShow(hand, T, openingKind) {
+export function acesToShow(hand, T, openingKind, acesUsed = 0) {
   const notes = [];
   let points = 0;
   if (!isColor(T)) return { points, notes };
   const p = trumpProfile(hand, T);
   let aces = p.sideAces;
   if (p.A && ['V', 'V9', 'V9court', 'barrage'].includes(openingKind)) aces++;
+  aces = Math.max(0, aces - acesUsed);
   if (aces) { points += 10 * aces; notes.push(`${aces} as`); }
   if (p.belote) { points += 20; notes.push('la belote'); }
   return { points, notes };
@@ -207,7 +242,8 @@ function shownValue(history, team, trump) {
  * Analyse d'enchère : {action, estimates, explanation}.
  * view : vue du moteur en phase d'enchères (hand, seat, auction, options).
  */
-export function analyzeBid(view, level = 'medium', rand = Math.random) {
+export function analyzeBid(view, level = 'medium', rand = Math.random, tuning = BID_TUNING) {
+  const tu = tuning;
   const { hand, seat, auction, options, names } = view;
   const partner = partnerOf(seat);
   const myTeam = teamOf(seat);
@@ -232,7 +268,7 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
   if (auction.mult > 1) {
     if (options.surcoinche && level !== 'easy') {
       const e = estimates[current.trump];
-      if (e.points + (e.belote ? 20 : 0) >= current.value + 30) {
+      if (e.points + (e.belote ? 20 : 0) >= current.value + tu.surcoinche) {
         return out({ type: 'surcoinche' }, 'Votre jeu est très solide : surcoinchez !');
       }
     }
@@ -254,6 +290,10 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
     && !(myBids.length && !isColor(partnerLast.trump))) {
     const T = partnerLast.trump;
     const sup = usefulCards(hand, T);
+    if (tu.supportLen && isColor(T) && hand.filter((c) => suitOf(c) === T).length >= tu.supportLen) {
+      sup.points += 10;
+      sup.notes.push(`${hand.filter((c) => suitOf(c) === T).length} atouts`);
+    }
     if (sup.points >= 10) {
       const base = teamLastIn(hist, myTeam, T).value;
       candidates.push({
@@ -294,8 +334,8 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
     const firstInT = hist.find((h) => h.type === 'bid' && teamOf(h.seat) === myTeam && h.trump === T);
     const iOpened = firstInT && firstInT.seat === seat;
     if (iOpened && mine.length === 1) {
-      const op = openingValue(hand, T, { loose: true, leads });
-      const show = acesToShow(hand, T, op ? op.kind : 'V');
+      const op = openingValue(hand, T, { loose: true, leads, tuning: tu });
+      const show = acesToShow(hand, T, op ? op.kind : 'V', op && op.acesUsed ? op.acesUsed : 0);
       if (show.points >= 10) {
         candidates.push({
           prio: 2,
@@ -312,7 +352,7 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
   const lastChance = !current && hist.length === 3 && hist.every((h) => h.type === 'pass');
   if (!myBids.length) {
     for (const T of TRUMPS) {
-      const op = openingValue(hand, T, { loose: lastChance || (level === 'easy' && rand() < 0.5), leads });
+      const op = openingValue(hand, T, { loose: lastChance || (level === 'easy' && rand() < 0.5), leads, tuning: tu });
       if (!op) continue;
       // pas de sans atout / tout atout sans arrêt dans la couleur adverse
       if (!isColor(T) && stopperMissing(T)) continue;
@@ -330,9 +370,9 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
       let compete = null;
       if (value < required) {
         // en concurrence, on ne reparlera peut-être pas : on compte aussi ses as (et la belote)
-        const show = acesToShow(hand, T, op.kind);
-        if (required > op.value + 10 + show.points) continue;
-        if (required > op.value + 10) compete = show;
+        const show = acesToShow(hand, T, op.kind, op.acesUsed || 0);
+        if (required > op.value + tu.competeStep + show.points) continue;
+        if (required > op.value + tu.competeStep) compete = show;
         value = required;
       }
       const opening = !current;
@@ -342,7 +382,9 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
       else if (lastChance && value === 80) {
         why = `${op.text} : les trois autres ont passé, vous pouvez ouvrir plus léger à 80 ${S(T)} en dernière position.`;
       } else if (opening) {
-        why = `${op.text} : ouvrez à ${value} ${S(T)}.${['V', '9', 'V9court'].includes(op.kind) ? ' Votre partenaire complétera ; vos as viendront au second tour.' : ''}`;
+        why = op.acesUsed
+          ? `${op.text} : ouvrez à ${value} ${S(T)}. Ce sont vos as qui permettent d'ouvrir avec seulement ${trumpProfile(hand, T).n} atouts : vous ne les réannoncerez pas.`
+          : `${op.text} : ouvrez à ${value} ${S(T)}.${['V', '9', 'V9court'].includes(op.kind) ? ' Votre partenaire complétera ; vos as viendront au second tour.' : ''}`;
       } else if (compete) {
         why = `${op.text}, plus ${compete.notes.join(' et ')} : en concurrence, comptez aussi vos as → ${over(value)}${value} ${S(T)}.`;
       } else why = `${op.text} : ${over(value)}${value} ${S(T)}.`;
@@ -368,7 +410,7 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
       reason = `ils annoncent ${S(T)} mais c'est vous qui avez le valet et le 9`;
     }
     if (level === 'hard' && current.value - shownValue(hist, teamOf(current.seat), T) >= 20) d += 0.5;
-    if (d >= (level === 'hard' ? 4.7 : 5)) {
+    if (d >= (level === 'hard' ? tu.coincheHard : tu.coinche)) {
       coinche = out({ type: 'coinche' },
         `Les adversaires annoncent ${current.value} ${S(T)}, mais ${reason} : coinchez.`);
     }
@@ -403,7 +445,7 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
       ? 'Vous avez déjà montré votre jeu : passez.'
       : `Votre équipe a déjà montré tout son jeu : pas de quoi dépasser ${current ? current.value : ''} ${current ? S(current.trump) : ''}.`;
   } else if (current) {
-    const best = TRUMPS.map((t) => openingValue(hand, t, { leads })).filter(Boolean).sort((a, b) => b.value - a.value)[0];
+    const best = TRUMPS.map((t) => openingValue(hand, t, { leads, tuning: tu })).filter(Boolean).sort((a, b) => b.value - a.value)[0];
     explanation = best
       ? `${best.text.charAt(0).toUpperCase() + best.text.slice(1)}, mais cela ne suffit pas pour dépasser ${current.value} : passez.`
       : `Pas de couleur à annoncer au-dessus de ${current.value} : passez.`;
@@ -411,20 +453,20 @@ export function analyzeBid(view, level = 'medium', rand = Math.random) {
   return out({ type: 'pass' }, explanation);
 }
 
-export function chooseBid(view, level = 'medium', rand = Math.random) {
-  return analyzeBid(view, level, rand).action;
+export function chooseBid(view, level = 'medium', rand = Math.random, tuning = BID_TUNING) {
+  return analyzeBid(view, level, rand, tuning).action;
 }
 
 export { explainAuction };
 
 export const CONVENTION_SUMMARY = [
-  ['80', 'Valet ou 9 d\'atout (l\'un des deux manque) avec au moins 4 atouts, ou valet et 9 avec seulement 3 atouts. Les as ne comptent pas dans la première annonce.'],
+  ['80', 'Valet ou 9 d\'atout (l\'un des deux manque) : le valet avec 4 atouts, ou seulement 3 s\'il y a un as à côté ; le 9 avec 4 atouts, ou seulement 3 avec deux as à côté. Ou valet et 9 avec 3 atouts. Les as qui ont servi à ouvrir ne sont pas réannoncés.'],
   ['90', 'Valet et 9 d\'atout avec au moins 4 atouts. Sur un 80 adverse, 90 peut aussi être une simple surenchère avec le valet ou le 9.'],
   ['100', 'Valet, 9 et as d\'atout (4 atouts), ou valet et 9 avec 5 atouts.'],
   ['110-130', 'Barrage : au moins 6 atouts avec le valet (120 avec le 9, 130 avec 7 atouts).'],
   ['Soutien', 'Le partenaire monte de 10 par carte utile : chaque as, le valet ou le 9 d\'atout ; la belote vaut 20. Sans rien, il passe.'],
   ['2e tour', 'L\'ouvreur annonce ses as : +10 par as (belote +20) sur l\'enchère de son équipe.'],
-  ['Concurrence', 'Pour dépasser une enchère adverse, on peut monter de 10 au-dessus de sa valeur d\'ouverture, et compter aussi ses as (+10 chacun).'],
+  ['Concurrence', 'Pour dépasser une enchère adverse, on peut monter jusqu\'à 20 au-dessus de sa valeur d\'ouverture, et compter aussi ses as (+10 chacun).'],
   ['Nouvelle couleur', 'Peu de cartes dans la couleur du partenaire mais une couleur très forte (valet et 9, ou 6 atouts).'],
   ['4e position', 'Après trois « passe », on peut ouvrir à 80 plus légèrement : le valet avec 3 atouts, ou le 9 avec 4 atouts.'],
   ['SA / TA', 'On compte ses levées sûres, c\'est-à-dire ses cartes maîtresses (as, 10, roi… en sans atout ; valet, 9, as… en tout atout) : 5 levées = 80, 6 = 90, 7 = 110, 8 = capot. Celui qui parle en premier entame la manche : sa longue couleur maîtresse compte alors en entier, car il garde la main et encaisse toute la couleur.'],

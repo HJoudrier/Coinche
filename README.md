@@ -15,9 +15,11 @@ L'interface est pensée d'abord pour le téléphone.
   Le niveau difficile tire jusqu'à 500 donnes possibles par carte (réglable). Les donnes sont tirées selon les déductions : annonces, appels, cartes jouées, singletons probables, obligation de monter.
   Chaque donne est jouée jusqu'au bout avec l'algorithme des robots. Les cartes nettement moins bonnes sont écartées en cours de route.
   Le calcul tourne dans un Web Worker : l'écran reste fluide.
-- **Enchères par conventions** : la première annonce montre l'atout. 80 se fait avec le valet ou le 9 et 4 atouts, 90 avec le valet et le 9. Le barrage se fait avec 6 atouts.
-  Le partenaire soutient à +10 par carte utile (as, valet ou 9 d'atout ; belote +20), et l'ouvreur annonce ses as au second tour.
-  En sans atout et en tout atout, on compte ses levées sûres : 5 = 80, 6 = 90, 7 = 110. Celui qui entame la manche compte en entier sa longue couleur maîtresse.
+- **Enchères par conventions** : la première annonce montre l'atout.
+  - 80 se fait avec le valet et 4 atouts (3 avec un as à côté), le 9 et 4 atouts (3 avec deux as), ou le valet et le 9 avec 3 atouts.
+  - 90 se fait avec le valet et le 9 ; le barrage avec 6 atouts.
+  - Le partenaire soutient à +10 par carte utile (as, valet ou 9 d'atout ; belote +20). L'ouvreur annonce ses as au second tour, sauf ceux qui lui ont servi à ouvrir.
+  - Les seuils ont été réglés par des milliers de parties simulées avec l'algorithme de jeu des robots.
 - **Jeu de la carte des robots** :
   - L'équipe preneuse fait tomber les atouts adverses avant de jouer ses as, et le partenaire du preneur rejoue atout.
     Si le partenaire tient le valet, on entame petit atout pour forcer l'adversaire à monter (son 9 peut tomber).

@@ -6,7 +6,9 @@ import { GameView } from './ui/game.js';
 import { statsBody } from './ui/statsview.js';
 import { settingsBody, rulesBody } from './ui/settingsview.js';
 import { GameHost, randomId } from './host.js';
-import { HostNet, GuestNet, normalizeCode, peerAvailable } from './network.js';
+import {
+  HostNet, GuestNet, normalizeCode, peerAvailable, backgroundTicker,
+} from './network.js';
 import {
   getSettings, updateSettings, onSettingsChange, OPTIONS, safeGet, safeSet,
 } from './settings.js';
@@ -17,6 +19,8 @@ import qrcode from '../vendor/qrcode.mjs';
 const app = document.getElementById('app');
 const SAVE_KEY = 'coinche.saved.v1';
 const TOKEN_KEY = 'coinche.token';
+const GUEST_KEY = 'coinche.guest.v1'; // partie en ligne rejointe : {code, at}, pour y revenir après un rechargement
+const GUEST_MAX_AGE = 3 * 3600 * 1000;
 const SEAT_LABELS = ['Sud', 'Est', 'Nord', 'Ouest'];
 const ROLE = ['vous', 'adversaire', 'partenaire', 'adversaire'];
 
@@ -31,6 +35,7 @@ const session = {
   reaper: null,
   guestCode: null,
   wakeLock: null,
+  onlineLock: null,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -40,6 +45,53 @@ function myToken() {
   let t = safeGet(TOKEN_KEY);
   if (!t) { t = randomId(16); safeSet(TOKEN_KEY, t); }
   return t;
+}
+
+// --- partie en ligne rejointe : retour automatique après un rechargement de la page
+function rememberGuest(code) {
+  const v = JSON.stringify({ code, at: Date.now() });
+  try { sessionStorage.setItem(GUEST_KEY, v); } catch { /* indisponible */ }
+  safeSet(GUEST_KEY, v);
+}
+
+function forgetGuest() {
+  try { sessionStorage.removeItem(GUEST_KEY); } catch { /* indisponible */ }
+  safeSet(GUEST_KEY, 'null');
+}
+
+/** Code de la partie rejointe récemment (`tabOnly` : seulement dans cet onglet), sinon null. */
+function recentGuest(tabOnly) {
+  let raw = null;
+  try { raw = sessionStorage.getItem(GUEST_KEY); } catch { /* indisponible */ }
+  if (!raw && !tabOnly) raw = safeGet(GUEST_KEY);
+  try {
+    const g = JSON.parse(raw || 'null');
+    return g && g.code && Date.now() - g.at < GUEST_MAX_AGE ? g.code : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verrou tenu pendant une partie en ligne : sur ordinateur, il évite que le navigateur gèle
+ * l'onglet quand le joueur ouvre une autre page (sans effet sur les téléphones).
+ */
+function holdOnlineLock() {
+  if (session.onlineLock || !navigator.locks) return;
+  try {
+    navigator.locks.request(`coinche-online-${randomId(8)}`, () => new Promise((resolve) => { session.onlineLock = resolve; }))
+      .catch(() => {});
+  } catch { /* non supporté */ }
+}
+
+function releaseOnlineLock() {
+  if (session.onlineLock) session.onlineLock();
+  session.onlineLock = null;
+}
+
+function stopReaper() {
+  if (session.reaper) session.reaper.stop();
+  session.reaper = null;
 }
 
 function setScreen(el) {
@@ -62,6 +114,7 @@ function hostConfig() {
 }
 
 function teardown() {
+  if (session.mode === 'guest') forgetGuest(); // départ volontaire
   if (session.game) { session.game.destroy(); session.game = null; }
   if (session.host) { session.host.destroy(); session.host = null; }
   if (session.hostNet) {
@@ -71,8 +124,8 @@ function teardown() {
     session.hostNet = null;
   }
   if (session.guestNet) { session.guestNet.close(); session.guestNet = null; }
-  clearInterval(session.reaper);
-  session.reaper = null;
+  stopReaper();
+  releaseOnlineLock();
   session.lobby = null;
   session.mode = null;
   session.conns = {};
@@ -95,6 +148,7 @@ function loadSaved() {
 function showHome() {
   teardown();
   const saved = loadSaved();
+  const online = recentGuest(false);
   const st = getSettings();
   const suits = h('div', { class: 'logo-suits' },
     h('span', null, '♠'), h('span', { class: 'red' }, '♥'), h('span', null, '♣'), h('span', { class: 'red' }, '♦'));
@@ -102,9 +156,11 @@ function showHome() {
     h('div', { class: 'logo' }, suits, h('h1', null, 'Coinche'),
       h('p', { class: 'muted' }, 'Sans annonces · contre des robots ou entre amis')),
     h('div', { class: 'menu' },
-      saved ? h('button', { class: 'btn primary', onClick: resumeSolo },
+      online ? h('button', { class: 'btn primary', onClick: () => showJoin(online, '', { auto: true }) },
+        'Revenir à la partie en ligne', h('small', null, `Code ${online}`)) : null,
+      saved ? h('button', { class: `btn ${online ? '' : 'primary'}`, onClick: resumeSolo },
         'Reprendre la partie', h('small', null, `Manche ${saved.state.history.length + 1} · ${saved.state.scores[0]} – ${saved.state.scores[1]}`)) : null,
-      h('button', { class: `btn ${saved ? '' : 'primary'}`, onClick: showLobby }, 'Nouvelle partie'),
+      h('button', { class: `btn ${saved || online ? '' : 'primary'}`, onClick: showLobby }, 'Nouvelle partie'),
       h('button', { class: 'btn', onClick: () => showJoin('') }, 'Rejoindre une partie'),
       h('div', { class: 'menu-row' },
         h('button', { class: 'btn', onClick: () => openStats(null) }, '📊 Stats'),
@@ -240,8 +296,8 @@ async function ensureRoom() {
     const code = await net.open();
     if (session.lobby !== L) { net.close(); return; }
     L.code = code;
-    clearInterval(session.reaper);
-    session.reaper = setInterval(() => net.reapSilent(20000), 5000);
+    stopReaper();
+    session.reaper = backgroundTicker(5000, () => net.reapSilent(20000));
   } catch (e) {
     if (session.hostNet === net) session.hostNet = null;
     L.error = e.message;
@@ -282,6 +338,11 @@ function inviteBox(code) {
 function onHostMessage(conn, msg) {
   if (!msg || typeof msg !== 'object') return;
   if (msg.t === 'hello') { onHello(conn, msg); return; }
+  if (msg.t === 'presence') {
+    // l'invité a caché ou réaffiché sa page
+    if (session.host && conn.seat !== undefined && session.conns[conn.seat] === conn) session.host.setAway(conn.seat, !!msg.away);
+    return;
+  }
   if (msg.t === 'action' && session.host && conn.seat !== undefined && session.conns[conn.seat] === conn) {
     const res = session.host.act(conn.seat, msg.action || {});
     if (!res.ok && res.error) session.hostNet.send(conn, { t: 'error', message: res.error });
@@ -295,7 +356,8 @@ function onHello(conn, msg) {
   if (session.host) {
     const seats = session.host.seats;
     let seat = seats.findIndex((s) => s.kind === 'remote' && s.token === token);
-    if (seat < 0) seat = seats.findIndex((s) => s.kind === 'remote' && !s.connected);
+    // un nouveau venu ne prend jamais la place d'un absent, seulement une place laissée à un robot
+    if (seat < 0) seat = seats.findIndex((s) => s.kind === 'remote' && s.standIn && !s.connected);
     if (seat < 0) { net.send(conn, { t: 'full' }); setTimeout(() => conn.close(), 300); return; }
     const old = session.conns[seat];
     if (old && old !== conn) { try { old.close(); } catch { /* ignore */ } }
@@ -376,7 +438,7 @@ async function startFromLobby() {
   if (!online && session.hostNet) {
     session.hostNet.close();
     session.hostNet = null;
-    clearInterval(session.reaper);
+    stopReaper();
   }
   startHostGame({ seats, online });
 }
@@ -389,6 +451,10 @@ function startHostGame({ seats, online, saved = null }) {
   if (saved) Object.assign(host.config, { ...hostConfig(), targetScore: host.config.targetScore });
   session.host = host;
   session.mode = online ? 'host' : 'solo';
+  if (online) {
+    holdOnlineLock();
+    host.setAway(0, document.visibilityState === 'hidden');
+  }
   host.onChange = (hh) => {
     if (session.mode === 'solo') {
       if (hh.state.phase === 'gameOver') safeSet(SAVE_KEY, 'null');
@@ -500,7 +566,7 @@ async function quitGame() {
 // ---------------------------------------------------------------------------
 // Invité
 // ---------------------------------------------------------------------------
-function showJoin(code, error = '') {
+function showJoin(code, error = '', { auto = false } = {}) {
   teardown();
   const st = getSettings();
   const codeInput = h('input', {
@@ -537,7 +603,10 @@ function showJoin(code, error = '') {
     h('div', { class: 'field' }, h('label', null, 'Code de la partie'), codeInput),
     h('div', { class: 'field' }, h('label', null, 'Votre nom'), nameInput),
     btn, status));
-  if (normalizeCode(code).length >= 4 && !error) setTimeout(() => btn.focus(), 50);
+  if (auto && normalizeCode(code).length >= 4) {
+    go();
+    status.textContent = 'Retour à la partie…';
+  } else if (normalizeCode(code).length >= 4 && !error) setTimeout(() => btn.focus(), 50);
 }
 
 async function connectGuest(code) {
@@ -548,7 +617,17 @@ async function connectGuest(code) {
   session.guestNet = net;
   session.mode = 'guest';
   session.guestCode = code;
+  rememberGuest(code);
+  holdOnlineLock();
+  sendHello();
+}
+
+/** Présentation à l'hôte (place retrouvée grâce au jeton), puis état de la page. */
+function sendHello() {
+  const net = session.guestNet;
+  if (!net) return;
   net.send({ t: 'hello', name: getSettings().playerName, token: myToken() });
+  net.send({ t: 'presence', away: document.visibilityState === 'hidden' });
 }
 
 function onGuestMessage(msg) {
@@ -561,6 +640,7 @@ function onGuestMessage(msg) {
       if (!session.game) showGuestWaiting(msg.seats, msg.you);
       break;
     case 'view':
+      if (Date.now() - (session.guestSeenAt || 0) > 30000) { session.guestSeenAt = Date.now(); rememberGuest(session.guestCode); }
       if (!session.game) {
         mountGame({ send: (a) => session.guestNet && session.guestNet.send({ t: 'action', action: a }), canReplay: false });
       }
@@ -580,7 +660,7 @@ function onGuestMessage(msg) {
       if (session.mode === 'guest') {
         const inGameOver = session.game && session.game.view && session.game.view.phase === 'gameOver';
         if (!inGameOver) { showHome(); toast('L\'hôte a arrêté la partie.', 3500); }
-        else { session.guestNet.close(); session.guestNet = null; }
+        else { forgetGuest(); session.guestNet.close(); session.guestNet = null; }
       }
       break;
     default:
@@ -602,30 +682,61 @@ function showGuestWaiting(seats, you) {
 }
 
 let reconnecting = false;
+
+function waitVisible() {
+  return new Promise((resolve) => {
+    if (document.visibilityState !== 'hidden') { resolve(); return; }
+    const on = () => {
+      if (document.visibilityState === 'hidden') return;
+      document.removeEventListener('visibilitychange', on);
+      resolve();
+    };
+    document.addEventListener('visibilitychange', on);
+  });
+}
+
+/**
+ * Liaison avec l'hôte perdue (page suspendue en arrière-plan, réseau coupé…) : reconnexion
+ * automatique à la même place, sans limite de durée tant que l'invité ne quitte pas.
+ * Les essais sont suspendus pendant que la page est cachée. Le bandeau n'apparaît que si
+ * la reconnexion tarde.
+ */
 async function onGuestClose() {
   if (session.mode !== 'guest' || reconnecting) return;
   reconnecting = true;
-  const banner = h('div', { class: 'reconnect' }, 'Connexion perdue — reconnexion…');
-  document.body.append(banner);
+  const text = h('span', null, 'Reconnexion à la partie…');
+  const banner = h('div', { class: 'reconnect' }, text,
+    h('button', { class: 'btn small', onClick: () => { banner.remove(); showHome(); } }, 'Quitter'));
+  const showBanner = setTimeout(() => document.body.append(banner), 1500);
+  const t0 = Date.now();
   try {
-    for (let i = 0; i < 12 && session.mode === 'guest'; i++) {
-      await sleep(i ? 3000 : 1000);
+    for (let i = 0; session.mode === 'guest' && session.guestNet; i++) {
+      await sleep([300, 1000, 2000][i] ?? 5000);
+      await waitVisible();
       if (session.mode !== 'guest' || !session.guestNet) break;
+      if (Date.now() - t0 > 60000) text.textContent = 'L\'hôte ne répond pas pour l\'instant — nouvel essai…';
       try {
         await session.guestNet.connect(session.guestCode);
-        session.guestNet.send({ t: 'hello', name: getSettings().playerName, token: myToken() });
-        toast('Reconnecté');
+        sendHello();
+        if (Date.now() - t0 > 3000) toast('Reconnecté');
         return;
       } catch { /* nouvel essai */ }
     }
-    if (session.mode === 'guest') {
-      showHome();
-      toast('Connexion à la partie perdue.', 4000);
-    }
   } finally {
+    clearTimeout(showBanner);
     banner.remove();
     reconnecting = false;
   }
+}
+
+/** Au retour sur la page : la liaison est-elle toujours là ? Sinon, reconnexion immédiate. */
+async function checkGuestLink() {
+  if (session.mode !== 'guest' || reconnecting || !session.guestNet) return;
+  const net = session.guestNet;
+  if (!net.conn) { onGuestClose(); return; }
+  // plus de 20 s sans nouvelles (page suspendue) : l'hôte a fermé la liaison, on se reconnecte tout de suite
+  if (Date.now() - net.lastHeard > 20000) { net.lost(); return; }
+  await net.check(3000); // en cas d'échec, la liaison est déclarée perdue et onGuestClose prend le relais
 }
 
 // ---------------------------------------------------------------------------
@@ -646,7 +757,21 @@ function releaseWakeLock() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && session.game) requestWakeLock();
+  const hidden = document.visibilityState === 'hidden';
+  if (!hidden && session.game) requestWakeLock();
+  if (session.mode === 'host' && session.host) session.host.setAway(0, hidden);
+  if (session.mode === 'guest' && session.guestNet) {
+    session.guestNet.send({ t: 'presence', away: hidden });
+    if (!hidden) checkGuestLink();
+  }
+});
+
+window.addEventListener('pageshow', (e) => { if (e.persisted) checkGuestLink(); });
+window.addEventListener('online', () => checkGuestLink());
+window.addEventListener('pagehide', (e) => {
+  // page quittée (autre site dans le même onglet, fermeture) : l'hôte le sait tout de suite ;
+  // au retour, la page rechargée revient d'elle-même à la table
+  if (session.mode === 'guest' && session.guestNet && !e.persisted) session.guestNet.send({ t: 'bye' });
 });
 
 window.addEventListener('beforeunload', (e) => {
@@ -670,9 +795,13 @@ onSettingsChange((st) => {
 if (getSettings().cardStyle === 'classic') preloadCardImages();
 const params = new URLSearchParams(location.search);
 const joinCode = params.get('join');
+const rejoin = recentGuest(true);
 if (joinCode) {
   history.replaceState(null, '', location.pathname);
-  showJoin(joinCode);
+  showJoin(joinCode, '', { auto: normalizeCode(joinCode) === rejoin });
+} else if (rejoin) {
+  // page rechargée ou restaurée pendant une partie en ligne : retour automatique à la table
+  showJoin(rejoin, '', { auto: true });
 } else {
   showHome();
 }

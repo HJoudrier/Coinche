@@ -1,6 +1,6 @@
 // Table de jeu : rendu de la vue d'un joueur et interactions (enchères, cartes, aides, timers).
 import {
-  h, clear, cardEl, toast, openModal, suitSpan, append,
+  h, clear, cardEl, toast, openModal, suitSpan, append, confirmDialog,
 } from './dom.js';
 import {
   SUIT_SYMBOL, SUIT_NAME, TRUMPS, teamOf, sortHand, cardLabel,
@@ -50,6 +50,12 @@ export class GameView {
     this.gameOverNotified = null;
     this.timerRaf = null;
     this.root = this.build();
+    this.viewAt = 0;
+    // durée d'absence affichée, rafraîchie chaque seconde tant qu'un joueur est absent
+    this.presenceTimer = setInterval(() => {
+      const v = this.view;
+      if (v && v.seatsInfo && v.seatsInfo.some((i) => i.presence === 'away')) { this.renderSeats(); this.renderWait(); }
+    }, 1000);
     this.cardStyle = getSettings().cardStyle;
     this.unsub = onSettingsChange((st) => {
       this.advice = null; this.bidAdv = null; this.adviceSeq = null; this.bidAdvSeq = null;
@@ -65,6 +71,7 @@ export class GameView {
 
   destroy() {
     cancelAnimationFrame(this.timerRaf);
+    clearInterval(this.presenceTimer);
     if (this.unsub) this.unsub();
     if (this.roundModal) this.roundModal.close();
   }
@@ -80,7 +87,7 @@ export class GameView {
     this.seats = REL.map((pos, rel) => {
       const ring = h('i', { class: 'ring' });
       const initial = h('span', { class: 'initial' });
-      const avatar = h('div', { class: 'avatar' }, initial, ring);
+      const avatar = h('div', { class: 'avatar', onClick: () => this.offerStandIn((this.view.seat + rel) % 4) }, initial, ring);
       const name = h('div', { class: 'name' });
       const badges = h('div', { class: 'badges' });
       const bubble = h('div', { class: 'bubble', onClick: () => this.explainSeat(rel) });
@@ -91,6 +98,7 @@ export class GameView {
     this.table = h('div', { class: 'table' }, this.trickEl, ...this.seats.map((s) => s.el));
 
     this.myTimer = h('div', { class: 'mytimer' }, h('i'));
+    this.waitEl = h('div', { class: 'waitbar', role: 'status' });
     this.hintEl = h('div', {
       class: 'hint',
       onClick: () => {
@@ -102,7 +110,7 @@ export class GameView {
     });
     this.handEl = h('div', { class: 'hand' });
     this.bidEl = h('div', { class: 'bidpanel' });
-    return h('div', { class: 'game' }, top, this.table, this.myTimer, this.hintEl, this.handEl, this.bidEl);
+    return h('div', { class: 'game' }, top, this.table, this.myTimer, this.waitEl, this.hintEl, this.handEl, this.bidEl);
   }
 
   rel(seat) {
@@ -125,6 +133,7 @@ export class GameView {
       this.selected = null;
     }
     this.view = view;
+    this.viewAt = Date.now();
     this.pending = false;
     this.receivedAt = performance.now();
     this.handleEvents();
@@ -136,7 +145,7 @@ export class GameView {
     const v = this.view;
     for (const ev of v.events) {
       if (ev.id <= this.lastEventId) continue;
-      if (ev.kind === 'info' || ev.seat === null || ev.seat === undefined) toast(ev.text);
+      if (ev.kind === 'presence') { if (ev.seat !== v.seat) toast(ev.text); } else if (ev.kind === 'info' || ev.seat === null || ev.seat === undefined) toast(ev.text);
       else if (ev.kind === 'belote' || ev.kind === 'contract' || ev.kind === 'timeout') {
         const rel = this.rel(ev.seat);
         this.tempBubbles[rel] = { text: ev.kind === 'timeout' ? '⏱ Temps écoulé' : ev.text, until: Date.now() + 2200, kind: ev.kind };
@@ -150,6 +159,7 @@ export class GameView {
     if (!this.view) return;
     this.renderTop();
     this.renderSeats();
+    this.renderWait();
     this.renderTrick();
     this.computeAdvice();
     this.renderHand();
@@ -195,16 +205,22 @@ export class GameView {
       const rel = this.rel(s);
       const seat = this.seats[rel];
       const info = v.seatsInfo ? v.seatsInfo[s] : { kind: 'human', connected: true };
+      const presence = info.presence || (info.connected ? 'online' : 'away');
       const name = v.names[s] || '';
       const team = teamOf(s) === this.us() ? 'us' : 'them';
-      seat.el.className = `seat ${REL[rel]} ${team} ${active === s ? 'active' : ''} ${info.connected ? '' : 'offline'}`;
+      seat.el.className = `seat ${REL[rel]} ${team} ${active === s ? 'active' : ''} ${presence === 'away' ? 'away' : ''} ${presence === 'away' && info.remote && rel !== 0 ? 'can-standin' : ''}`;
       seat.initial.textContent = info.kind === 'robot' ? '🤖' : (name.trim()[0] || '?').toUpperCase();
       seat.name.textContent = rel === 0 ? `${name} (vous)` : name;
       clear(seat.badges);
       if (v.dealer === s) seat.badges.append(h('span', { class: 'badge dealer', title: 'Donneur' }, 'D'));
       if (v.contract && v.contract.seat === s) seat.badges.append(h('span', { class: 'badge taker', title: 'Preneur' }, '★'));
       if (v.belote && v.belote.seat === s) seat.badges.append(h('span', { class: 'badge belote', title: 'Belote' }, 'B'));
-      if (!info.connected) seat.badges.append(h('span', { class: 'badge off' }, 'hors ligne'));
+      if (presence === 'away') {
+        const min = Math.floor(this.awayMs(s) / 60000);
+        seat.badges.append(h('span', { class: 'badge away', title: 'Absent : la table l\'attend' }, min >= 1 ? `absent · ${min} min` : 'absent'));
+      } else if (presence === 'robot') {
+        seat.badges.append(h('span', { class: 'badge standin', title: 'Un robot joue à sa place jusqu\'à son retour' }, '🤖 robot'));
+      }
       if (rel !== 0 && v.phase === 'playing') seat.badges.append(h('span', { class: 'badge count', title: 'Cartes en main' }, `${v.handCounts[s]}🂠`));
 
       const tb = this.tempBubbles[rel];
@@ -221,6 +237,51 @@ export class GameView {
       if (text) seat.bubble.append(renderBidText(text));
       if (tappable) seat.bubble.append(h('span', { class: 'info-dot', 'aria-hidden': 'true' }, 'i'));
     }
+  }
+
+  // ------------------------------------------------------------------ joueurs absents
+  /** Durée d'absence d'un joueur, au moment présent (la vue donne la durée à son envoi). */
+  awayMs(seat) {
+    const info = this.view.seatsInfo && this.view.seatsInfo[seat];
+    return info && info.presence === 'away' ? (info.awayMs || 0) + Date.now() - this.viewAt : 0;
+  }
+
+  /** Joueur absent que la table attend (son tour, ou « Manche suivante »), sinon null. */
+  waitedAbsent() {
+    const v = this.view;
+    if (!v || !v.seatsInfo) return null;
+    const absent = (s) => s !== v.seat && v.seatsInfo[s] && v.seatsInfo[s].presence === 'away';
+    if ((v.phase === 'bidding' || v.phase === 'playing') && v.turn !== null && v.turn !== undefined && absent(v.turn)) return v.turn;
+    if (v.phase === 'roundEnd') {
+      const s = (v.waitingFor || []).find(absent);
+      return s === undefined ? null : s;
+    }
+    return null;
+  }
+
+  renderWait() {
+    const el = this.waitEl;
+    const seat = this.waitedAbsent();
+    clear(el);
+    el.classList.toggle('show', seat !== null);
+    if (seat === null) return;
+    const v = this.view;
+    const secs = Math.floor(this.awayMs(seat) / 1000);
+    const since = secs < 60 ? `${secs} s` : `${Math.floor(secs / 60)} min ${String(secs % 60).padStart(2, '0')}`;
+    append(el, [
+      h('span', { class: 'waitbar-text' }, h('b', null, `En attente de ${v.names[seat]}`), ` · absent depuis ${since}`),
+      v.seatsInfo[seat].remote
+        ? h('button', { class: 'btn small', onClick: () => this.offerStandIn(seat) }, '🤖 Faire jouer un robot') : null,
+    ]);
+  }
+
+  /** Proposer qu'un robot joue pour un joueur absent, jusqu'à son retour (décision des joueurs présents). */
+  async offerStandIn(seat) {
+    const v = this.view;
+    const info = v && v.seatsInfo && v.seatsInfo[seat];
+    if (!info || !info.remote || info.presence !== 'away' || seat === v.seat) return;
+    const ok = await confirmDialog(`${v.names[seat]} est absent. Laisser un robot jouer à sa place jusqu'à son retour ?`, { ok: 'Faire jouer un robot' });
+    if (ok) this.o.send({ type: 'standIn', seat });
   }
 
   // ------------------------------------------------------------------ pli
@@ -552,12 +613,15 @@ export class GameView {
       return;
     }
     const iAmWaited = (v.waitingFor || []).includes(v.seat);
-    const others = (v.waitingFor || []).filter((s) => s !== v.seat).map((s) => v.names[s]);
+    const isAbsent = (s) => v.seatsInfo && v.seatsInfo[s] && v.seatsInfo[s].presence === 'away';
+    const others = (v.waitingFor || []).filter((s) => s !== v.seat).map((s) => (isAbsent(s) ? `${v.names[s]} (absent)` : v.names[s]));
+    const absentRemote = (v.waitingFor || []).filter((s) => s !== v.seat && isAbsent(s) && v.seatsInfo[s].remote);
     append(this.footer, [
       statsBtn,
       iAmWaited
         ? h('button', { class: 'btn primary', onClick: () => this.o.send({ type: 'ready' }) }, 'Manche suivante ▶')
         : h('div', { class: 'waiting' }, others.length ? `En attente de ${others.join(', ')}…` : 'Nouvelle donne…'),
+      ...absentRemote.map((s) => h('button', { class: 'btn', onClick: () => this.offerStandIn(s) }, `🤖 Robot pour ${v.names[s]}`)),
     ]);
   }
 

@@ -3,8 +3,9 @@
 //
 // Protocole (JSON) :
 //   invité → hôte : {t:'hello', name, token} | {t:'action', action} | {t:'ping'}
+//                   {t:'presence', away} (page cachée ou visible) | {t:'bye'} (page fermée)
 //   hôte → invité : {t:'welcome', seat, code} | {t:'lobby', seats} | {t:'view', view}
-//                   {t:'error', message} | {t:'full'} | {t:'pong'}
+//                   {t:'error', message} | {t:'full'} | {t:'pong'} | {t:'ended'}
 
 export const PEER_PREFIX = 'coinche-';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -17,6 +18,36 @@ export function makeRoomCode(n = 6) {
 
 export function normalizeCode(code) {
   return String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/**
+ * Appelle `fn` toutes les `ms` millisecondes. La cadence vient d'un petit Web Worker : ses timers sont
+ * moins ralentis que ceux d'un onglet caché, ce qui garde le battement de cœur quand le joueur ouvre
+ * une autre page (sur ordinateur ; un téléphone suspend la page entière). Repli sur setInterval.
+ */
+export function backgroundTicker(ms, fn) {
+  let worker = null;
+  let id = null;
+  const fallback = () => {
+    if (worker) { try { worker.terminate(); } catch { /* ignore */ } worker = null; }
+    if (id === null) id = setInterval(fn, ms);
+  };
+  try {
+    if (typeof Worker === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && URL.createObjectURL) {
+      const url = URL.createObjectURL(new Blob([`setInterval(() => postMessage(0), ${Number(ms)});`], { type: 'text/javascript' }));
+      worker = new Worker(url);
+      worker.onmessage = () => { if (url) URL.revokeObjectURL(url); fn(); };
+      worker.onerror = fallback;
+    }
+  } catch { worker = null; }
+  if (!worker) fallback();
+  return {
+    stop() {
+      if (worker) { try { worker.terminate(); } catch { /* ignore */ } worker = null; }
+      if (id !== null) clearInterval(id);
+      id = null;
+    },
+  };
 }
 
 export function peerAvailable() {
@@ -107,6 +138,7 @@ export class HostNet {
     conn.on('data', (msg) => {
       conn.lastSeen = Date.now();
       if (msg && msg.t === 'ping') { this.send(conn, { t: 'pong' }); return; }
+      if (msg && msg.t === 'bye') { this.drop(conn); return; }
       this.onMessage(conn, msg);
     });
     const closed = () => {
@@ -119,16 +151,35 @@ export class HostNet {
     conn.lastSeen = Date.now();
   }
 
-  /** Ferme les connexions silencieuses depuis plus de `ms`. */
-  reapSilent(ms = 20000) {
-    const now = Date.now();
+  /** Ferme une connexion et la signale comme perdue. */
+  drop(conn) {
+    if (!this.conns.has(conn)) return;
+    this.conns.delete(conn);
+    try { conn.close(); } catch { /* déjà fermée */ }
+    this.onDisconnect(conn);
+  }
+
+  /**
+   * Ferme les connexions silencieuses depuis plus de `ms` (appelé toutes les `every` ms).
+   * Si l'appel arrive très en retard, c'est l'hôte qui était suspendu (page cachée sur téléphone) :
+   * on laisse aux invités le temps de se manifester au lieu de couper tout le monde au réveil.
+   * @returns {Array} connexions fermées
+   */
+  reapSilent(ms = 20000, now = Date.now(), every = 5000) {
+    const late = this.lastReap !== undefined && now - this.lastReap > every + 10000;
+    this.lastReap = now;
+    if (late) {
+      for (const c of this.conns) c.lastSeen = now;
+      return [];
+    }
+    const dropped = [];
     for (const c of [...this.conns]) {
       if (now - (c.lastSeen || now) > ms) {
-        this.conns.delete(c);
-        try { c.close(); } catch { /* déjà fermée */ }
-        this.onDisconnect(c);
+        dropped.push(c);
+        this.drop(c);
       }
     }
+    return dropped;
   }
 
   send(conn, msg) {
@@ -150,13 +201,17 @@ export class GuestNet {
     this.onClose = onClose || (() => {});
     this.peer = null;
     this.conn = null;
-    this.pingTimer = null;
+    this.ticker = null;
     this.closedByUser = false;
+    this.lastHeard = 0;
+    this.waiters = [];
+    this.probing = null;
   }
 
   connect(code) {
     if (!peerAvailable()) return Promise.reject(new Error('Bibliothèque réseau indisponible'));
     this.disposePeer();
+    this.closedByUser = false;
     return new Promise((resolve, reject) => {
       let settled = false;
       const fail = (err) => {
@@ -175,15 +230,20 @@ export class GuestNet {
           clearTimeout(timeout);
           settled = true;
           this.conn = conn;
-          this.pingTimer = setInterval(() => this.send({ t: 'ping' }), 5000);
+          this.lastHeard = Date.now();
+          if (this.ticker) this.ticker.stop();
+          this.ticker = backgroundTicker(5000, () => this.tick());
           resolve();
         });
-        conn.on('data', (msg) => { if (!msg || msg.t !== 'pong') this.onMessage(msg); });
+        conn.on('data', (msg) => {
+          if (this.conn !== conn) return;
+          this.lastHeard = Date.now();
+          this.wake(true);
+          if (!msg || msg.t !== 'pong') this.onMessage(msg);
+        });
         const closed = () => {
           if (this.conn !== conn) return;
-          this.conn = null;
-          clearInterval(this.pingTimer);
-          if (!this.closedByUser) this.onClose();
+          this.lost();
         };
         conn.on('close', closed);
         conn.on('error', closed);
@@ -191,14 +251,61 @@ export class GuestNet {
     });
   }
 
+  /** Battement de cœur : un ping toutes les 5 s ; sans nouvelles depuis 15 s, on vérifie la liaison. */
+  tick() {
+    if (!this.conn) return;
+    this.send({ t: 'ping' });
+    if (Date.now() - this.lastHeard > 15000) this.check();
+  }
+
+  /** Réveille les vérifications en attente : `alive` = l'hôte a répondu. */
+  wake(alive) {
+    const w = this.waiters;
+    this.waiters = [];
+    for (const fn of w) fn(alive);
+  }
+
+  /** Vérifie que l'hôte répond (un ping, une réponse attendue sous `ms`). Si non, la liaison est déclarée perdue. */
+  check(ms = 3000) {
+    if (!this.conn) return Promise.resolve(false);
+    if (this.probing) return this.probing;
+    const conn = this.conn;
+    this.probing = new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), ms);
+      this.waiters.push((alive) => { clearTimeout(timer); resolve(alive); });
+      this.send({ t: 'ping' });
+    }).then((ok) => {
+      this.probing = null;
+      if (!ok && this.conn === conn) this.lost();
+      return ok;
+    });
+    return this.probing;
+  }
+
+  /** Liaison perdue : on la ferme et on prévient l'application (qui se reconnecte). */
+  lost() {
+    const conn = this.conn;
+    this.conn = null;
+    if (this.ticker) { this.ticker.stop(); this.ticker = null; }
+    this.wake(false);
+    if (conn) { try { conn.close(); } catch { /* ignore */ } }
+    if (!this.closedByUser) this.onClose();
+  }
+
+  get connected() {
+    return !!(this.conn && this.conn.open);
+  }
+
   send(msg) {
     try { if (this.conn && this.conn.open) this.conn.send(msg); } catch (e) { console.warn(e); }
   }
 
   disposePeer() {
-    clearInterval(this.pingTimer);
-    if (this.conn) { try { this.conn.close(); } catch { /* ignore */ } }
+    if (this.ticker) { this.ticker.stop(); this.ticker = null; }
+    const conn = this.conn;
     this.conn = null;
+    this.wake(false);
+    if (conn) { try { conn.close(); } catch { /* ignore */ } }
     if (this.peer) { try { this.peer.destroy(); } catch { /* ignore */ } }
     this.peer = null;
   }

@@ -31,7 +31,9 @@ L'interface est pensée d'abord pour le téléphone.
   Au jeu de la carte, le robot difficile ne simule que des donnes compatibles avec les annonces. L'aide affiche « ce que l'on sait des mains ».
   À partir de l'aide « Intermédiaire », toucher une bulle d'annonce en donne la signification.
 - **Partie en ligne** : chaque place peut être tenue par un robot ou réservée à un invité. L'invité scanne le QR code ou saisit le code de la partie.
-  Il peut se reconnecter à sa place, et un robot joue pour lui pendant une déconnexion.
+  - Un joueur qui ouvre une autre page, change d'application ou perd le réseau **garde sa place** : il apparaît « absent » et la table l'attend.
+    Les joueurs présents peuvent décider de **faire jouer un robot** à sa place jusqu'à son retour.
+  - À son retour, il se **reconnecte tout seul**, même si la page a été rechargée. L'accueil propose aussi de revenir à la partie en cours.
 - **Aides réglables**, de « aucune » à « expert », séparément pour les enchères et pour le jeu :
   force de la main, enchère conseillée, lecture des annonces, cartes jouables, carte conseillée, atouts restants, cartes maîtresses.
 - **Temps limité** réglable pour chaque enchère et pour chaque carte. À expiration, le joueur passe, ou bien la carte conseillée est jouée.
@@ -84,6 +86,10 @@ Pour lancer une partie en ligne :
 
 La connexion est en pair-à-pair (WebRTC, via [PeerJS](https://peerjs.com)). Le navigateur de l'hôte fait tourner la partie.
 La mise en relation passe par le serveur public gratuit de PeerJS, et aucune donnée de jeu n'y est stockée.
+Un téléphone suspend la page du jeu dès que l'on passe à une autre page ou application : la connexion ne peut pas rester ouverte.
+Le jeu rend cette absence invisible : la place est gardée et la reconnexion est automatique au retour.
+Sur ordinateur, la page reste en général active en arrière-plan. Sur téléphone, l'écran partagé garde les deux pages visibles.
+
 Sans serveur TURN, certains réseaux très restrictifs (réseaux d'entreprise, certains réseaux mobiles) peuvent bloquer la connexion.
 Dans ce cas, essayez en Wi-Fi. Un serveur PeerJS personnel peut être indiqué dans **Paramètres → Avancé**.
 
@@ -94,7 +100,8 @@ npm test
 ```
 
 Les tests couvrent les règles (fournir, monter, couper, surcouper, sous-couper, sans atout, tout atout), les enchères, le décompte
-(règle des 82, belote, capot, générale, coinche) et des parties complètes simulées entre robots.
+(règle des 82, belote, capot, générale, coinche), des parties complètes simulées entre robots et la présence des joueurs en ligne
+(absence, remplacement par un robot, retour).
 
 ## Structure
 

@@ -155,3 +155,15 @@ test('score maximal cohérent avec le solveur oui/non', async () => {
     assert.equal(b.us + b.them, 162);
   }
 });
+
+test('la partie optimale atteint exactement le score maximal annoncé', async () => {
+  const { bestScores, optimalLine } = await import('../js/solver.js');
+  for (const r of rounds(29, 3)) {
+    const b = bestScores(r, 0, r.contract.trump);
+    const capotTeam = b.bestUs === 250 ? 0 : b.bestThem === 250 ? 1 : null;
+    const o = optimalLine(r, 0, r.contract.trump, { capotTeam });
+    assert.equal(o.cardPoints[0], b.us);
+    assert.equal(o.cardPoints[1], b.them);
+    if (capotTeam !== null) assert.ok(o.record.tricks.every((t) => teamOf(t.winner) === capotTeam));
+  }
+});

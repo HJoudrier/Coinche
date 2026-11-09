@@ -644,3 +644,14 @@ details.hands { font-size: 0.88rem; }
 .rv-played { color: var(--accent); }
 .rv-scores-tbl td .us { color: #8dbcf5; }
 .rv-scores-tbl td .them { color: #f3a27c; }
+
+.rv-scores-tbl tr.clickable { cursor: pointer; }
+.rv-scores-tbl tr.clickable:hover td { background: rgba(255, 255, 255, 0.04); }
+.rv-scores-tbl tr.sel td { background: rgba(242, 193, 78, 0.16); }
+.rv-trump-detail { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.rv-challenge { display: flex; flex-direction: column; gap: 8px; }
+.rv-hand.active { outline: 2px solid var(--accent); }
+.card.mini.pick { cursor: pointer; box-shadow: 0 0 0 2px var(--accent); }
+.card.mini.dim { filter: brightness(0.55); }
+.rv-seat.turn { outline: 2px solid var(--accent); }
+.rv-challenge .rv-controls .btn { font-size: 0.85rem; min-width: 0; padding: 6px 10px; flex: 1; }

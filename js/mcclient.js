@@ -1,6 +1,8 @@
 // Accès au calcul Monte-Carlo : dans un Web Worker si possible, sinon sur le fil principal (budget réduit).
 import { monteCarloPlay, heuristicPlay } from './ai.js';
-import { analyzeRound, bestScores } from './solver.js';
+import {
+  analyzeRound, bestScores, optimalLine, solverMove,
+} from './solver.js';
 
 let worker = null;
 let broken = false;
@@ -84,4 +86,32 @@ export function bestScoresAsync(record, mySeat, trump, opts = {}) {
     pending.set(id, { resolve, reject, timer });
     w.postMessage({ id, type: 'scores', record: plain, mySeat, trump, opts });
   }).catch(direct);
+}
+
+/** Requête générique au Worker (repli : calcul direct). */
+function workerCall(message, direct, timeoutMs = 120000) {
+  const w = getWorker();
+  if (!w) return Promise.resolve().then(direct);
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('Délai dépassé')); }, timeoutMs);
+    pending.set(id, { resolve, reject, timer });
+    w.postMessage({ id, ...message });
+  }).catch(direct);
+}
+
+/** Partie optimale cartes sur table pour un atout (les deux camps jouent parfaitement). */
+export function optimalLineAsync(record, mySeat, trump, opts = {}) {
+  const plain = JSON.parse(JSON.stringify(record));
+  return workerCall({ type: 'line', record: plain, mySeat, trump, opts }, () => optimalLine(plain, mySeat, trump, opts));
+}
+
+/** Coup du solveur dans une position (vérification interactive). */
+export function solverMoveAsync(record, mySeat, trump, line, opts = {}) {
+  const plain = JSON.parse(JSON.stringify(record));
+  const l = JSON.parse(JSON.stringify(line));
+  return workerCall({ type: 'move', record: plain, mySeat, trump, line: l, opts }, () => {
+    const r = solverMove(plain, mySeat, trump, l, opts);
+    return { seat: r.seat, card: r.card };
+  });
 }

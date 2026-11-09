@@ -1,15 +1,19 @@
 // Écran « Revoir la donne » : mains de départ, enchères, plis, rejeu pas à pas et analyse cartes sur table.
 import {
-  h, clear, append, cardEl, openPanel, segmented,
+  h, clear, append, cardEl, openPanel, segmented, toast,
 } from './dom.js';
 import { renderBidText, auctionListEl } from './render.js';
 import {
   teamOf, partnerOf, sortHand, cardLabel, SUIT_SYMBOL, SUIT_NAME,
 } from '../cards.js';
-import { contractLabel, bidLabel } from '../auction.js';
+import { contractLabel, bidLabel, CAPOT } from '../auction.js';
+import { legalCards } from '../rules.js';
+import { stepsToTricks } from '../solver.js';
 import { explainAuction } from '../reading.js';
 import { replayState } from '../replay.js';
-import { analyzeRoundAsync, bestScoresAsync } from '../mcclient.js';
+import {
+  analyzeRoundAsync, bestScoresAsync, optimalLineAsync, solverMoveAsync,
+} from '../mcclient.js';
 
 const REL = ['bottom', 'right', 'top', 'left'];
 const AUTO_DELAY = 900;
@@ -212,7 +216,8 @@ export function openReview(history, index, { names, mySeat, tab = 'hands' }) {
     sec.append(h('h3', null, 'Score maximal par atout'),
       h('p', { class: 'muted small' },
         `Points de cartes (10 de der compris) que chaque équipe peut s'assurer cartes sur table si cet atout avait été choisi, avec la même entame (${names[leader]}). `,
-        'Le meilleur contrat tient compte de la règle des 82 points et de la belote.'));
+        'Le meilleur contrat tient compte de la règle des 82 points et de la belote. ',
+        'Touchez une ligne pour voir la partie optimale ou défendre vous-même contre le solveur.'));
     const tbody = h('tbody');
     sec.append(h('table', { class: 'tbl rv-scores-tbl' },
       h('thead', null, h('tr', null, h('th', null, 'Atout'), h('th', { class: 'us' }, 'Nous'), h('th', { class: 'them' }, 'Eux'), h('th', null, 'Meilleur contrat'))),
@@ -224,13 +229,24 @@ export function openReview(history, index, { names, mySeat, tab = 'hands' }) {
     const rows = {};
     for (const t of SCORE_TRUMPS) {
       const played = t === r.contract.trump;
-      rows[t] = h('tr', { class: played ? 'played' : '' },
+      rows[t] = h('tr', { class: `${played ? 'played' : ''} clickable`, onClick: () => showDetail(t) },
         h('td', null, h('span', { class: 'rv-trump' }, renderBidText(SUIT_SYMBOL[t])), ' ', h('span', { class: 'small muted' }, SUIT_NAME[t]),
           played ? h('div', { class: 'small rv-played' }, `joué : ${bidLabel(r.contract.value, t)}`) : null),
         h('td', null, '…'), h('td', null, '…'), h('td', { class: 'small muted' }, 'calcul…'));
       tbody.append(rows[t]);
     }
+    const results = {};
+    const detail = h('div', { class: 'rv-detail' });
+    const showDetail = (t) => {
+      const b = results[t];
+      if (!b) { toast('Calcul en cours pour cet atout…'); return; }
+      for (const x of Object.values(rows)) x.classList.toggle('sel', x === rows[t]);
+      clear(detail);
+      detail.append(trumpDetail(r, t, b));
+      detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
     const fill = (t, b) => {
+      results[t] = b;
       const tr = rows[t];
       if (!tr.isConnected && !sec.isConnected) return;
       const cells = tr.children;
@@ -257,7 +273,188 @@ export function openReview(history, index, { names, mySeat, tab = 'hands' }) {
         try { fill(t, await p); } catch (e) { console.error(e); }
       }
     })();
+    sec.append(detail);
     return sec;
+  }
+
+  /** Détenteur de la belote pour un atout donné (ou null). */
+  function beloteHolder(r, t) {
+    if (!['H', 'D', 'C', 'S'].includes(t)) return null;
+    const s = [0, 1, 2, 3].find((x) => r.hands[x].includes(`K${t}`) && r.hands[x].includes(`Q${t}`));
+    return s === undefined ? null : s;
+  }
+
+  /** Détail d'un atout : partie optimale, ou défense jouée par le joueur contre le solveur. */
+  function trumpDetail(r, t, b) {
+    const wrap = h('div', { class: 'rv-trump-detail' });
+    const capotTeam = b.bestUs === CAPOT ? us : b.bestThem === CAPOT ? 1 - us : null;
+    wrap.append(h('h3', null, renderBidText(`${SUIT_SYMBOL[t]} ${SUIT_NAME[t]} — cartes sur table`)),
+      h('p', { class: 'small' }, `Score maximal : nous ${b.us ?? '?'} · eux ${b.them ?? '?'}`,
+        capotTeam !== null ? ` — capot possible pour ${capotTeam === us ? 'nous' : 'eux'}` : ''));
+    const content = h('div');
+    let mode = 'line';
+    const draw = () => {
+      for (const stop of [...stoppers]) { stop(); }
+      clear(content);
+      if (mode === 'line') {
+        const box = h('div', { class: 'rv-result pending' }, h('div', { class: 'spinner small' }), 'Calcul de la partie optimale…');
+        content.append(box);
+        optimalLineAsync(r, mySeat, t, { capotTeam }).then((o) => {
+          if (!content.isConnected) return;
+          box.remove();
+          content.append(h('p', { class: 'muted small' }, 'Les deux camps jouent le meilleur coup en voyant toutes les cartes. ',
+            capotTeam !== null ? 'Le camp qui fait capot garde tous les plis ; l\'autre ne peut rien y faire.' : ''),
+          replayView({ ...o.record, beloteSeat: beloteHolder(r, t) }, { state: { step: 0 } }));
+        }).catch((e) => { box.className = 'rv-result'; clear(box); box.append(`Calcul impossible : ${e.message}`); });
+      } else {
+        const defaultTeam = capotTeam !== null ? 1 - capotTeam : (b.us !== null && b.us < 81 ? us : 1 - us);
+        content.append(challengeView(r, t, defaultTeam, capotTeam, b));
+      }
+    };
+    wrap.append(segmented([['line', 'Partie optimale'], ['play', 'Défendre moi-même']], mode, (v) => { mode = v; draw(); }, { small: true }), content);
+    draw();
+    return wrap;
+  }
+
+  /**
+   * Vérification interactive : le joueur choisit les cartes d'une équipe (cartes sur table),
+   * le solveur joue l'autre au mieux. Permet de tester soi-même un score ou un capot annoncé.
+   */
+  function challengeView(r, trump, userTeam0, capotTeam, b) {
+    const wrap = h('div', { class: 'rv-challenge' });
+    let userTeam = userTeam0;
+    let line = [];
+    let busy = false;
+    let alive = true;
+    stoppers.add(() => { alive = false; });
+    const leader = (r.dealer + 1) % 4;
+    const teamSel = segmented([[us, 'Je joue pour Nous'], [1 - us, 'Je joue pour Eux']], userTeam, (v) => {
+      userTeam = v; line = []; render(); advance();
+    }, { small: true });
+    const table = h('div', { class: 'rv-table' });
+    const trickEl = h('div', { class: 'trick' });
+    const seats = REL.map((pos) => h('div', { class: `rv-seat ${pos}` }));
+    table.append(trickEl, ...seats);
+    const info = h('div', { class: 'rv-counter' });
+    const score = h('div', { class: 'rv-score small' });
+    const handsEl = h('div', { class: 'rv-hands' });
+    const undoBtn = h('button', {
+      class: 'btn small',
+      onClick: () => {
+        if (busy) return;
+        // revenir à mon coup précédent
+        while (line.length && teamOf(line[line.length - 1].seat) !== userTeam) line.pop();
+        if (line.length) line.pop();
+        render();
+        advance();
+      },
+    }, '↶ Annuler mon coup');
+    const restartBtn = h('button', { class: 'btn small', onClick: () => { if (busy) return; line = []; render(); advance(); } }, '⟲ Recommencer');
+    const copyBtn = h('button', {
+      class: 'btn small ghost',
+      onClick: async () => {
+        const data = JSON.stringify({ hands: r.hands, dealer: r.dealer, trump, line });
+        try { await navigator.clipboard.writeText(data); toast('Donne copiée'); } catch { toast(data, 8000); }
+      },
+    }, 'Copier la donne');
+    wrap.append(h('p', { class: 'muted small' }, 'Choisissez les cartes de votre équipe (les quatre jeux sont visibles) ; le solveur joue l\'autre équipe au mieux.'),
+      teamSel, table, info, h('div', { class: 'rv-controls' }, undoBtn, restartBtn, copyBtn), score, handsEl);
+
+    const turnNow = () => {
+      if (!line.length) return leader;
+      const tricks = stepsToTricks(line, trump);
+      if (line.length % 4 === 0) return tricks[tricks.length - 1].winner;
+      return (line[line.length - 1].seat + 1) % 4;
+    };
+    const remaining = (s) => r.hands[s].filter((c) => !line.some((x) => x.card === c));
+
+    function render() {
+      const tricks = stepsToTricks(line, trump);
+      const pts = [0, 0];
+      const won = [0, 0];
+      for (const tr of tricks) { pts[teamOf(tr.winner)] += tr.points; won[teamOf(tr.winner)]++; }
+      const cur = line.length % 4 === 0 && line.length ? line.slice(-4) : line.slice(tricks.length * 4);
+      const complete = line.length % 4 === 0 && line.length > 0;
+      const lastWinner = complete ? tricks[tricks.length - 1].winner : null;
+      const turn = line.length < 32 ? turnNow() : null;
+      for (let s = 0; s < 4; s++) {
+        const rel = (s - mySeat + 4) % 4;
+        const el = seats[rel];
+        clear(el);
+        el.className = `rv-seat ${REL[rel]} ${teamOf(s) === us ? 'us' : 'them'} ${lastWinner === s ? 'win' : ''} ${turn === s ? 'turn' : ''}`;
+        el.append(h('b', null, names[s]));
+      }
+      clear(trickEl);
+      for (const { seat, card } of cur) {
+        const rel = (seat - mySeat + 4) % 4;
+        trickEl.append(cardEl(card, { class: `pos-${rel} ${lastWinner === seat ? 'won' : ''}` }));
+      }
+      clear(info);
+      if (line.length === 32) {
+        const capotDone = capotTeam !== null && won[1 - capotTeam] === 0;
+        info.append(h('div', { class: 'rv-phase win' }, 'Partie terminée'));
+        if (capotTeam !== null) {
+          info.append(capotDone
+            ? `Capot : l'équipe ${capotTeam === us ? 'Nous' : 'Eux'} a fait tous les plis.`
+            : `Un pli a été pris : le capot n'a pas tenu. Si votre équipe défendait, merci de signaler cette donne (bouton « Copier la donne »).`);
+        } else {
+          const userPts = pts[userTeam];
+          const bound = userTeam === us ? b.us : b.them;
+          info.append(userPts > bound
+            ? `Votre équipe a fait ${userPts} points, plus que le maximum annoncé (${bound}) : merci de signaler cette donne (bouton « Copier la donne »).`
+            : `Votre équipe a fait ${userPts} points. Face au jeu parfait du solveur, le maximum possible était ${bound}.`);
+        }
+      } else if (busy) info.append('Le solveur réfléchit…');
+      else info.append(`Pli ${tricks.length + 1}/8 — à vous de jouer pour `, h('b', null, names[turn]), '.');
+      clear(score);
+      score.append(`Points : nous ${pts[us]} · eux ${pts[1 - us]} — plis : ${won[us]} / ${won[1 - us]}`);
+      clear(handsEl);
+      const curTrick = line.slice(tricks.length * 4);
+      for (const s of [mySeat, partnerOf(mySeat), (mySeat + 1) % 4, (mySeat + 3) % 4]) {
+        const hand = sortHand(remaining(s), trump);
+        const mine = teamOf(s) === userTeam && turn === s && !busy;
+        const legal = mine ? legalCards(remaining(s), curTrick, trump, s) : [];
+        handsEl.append(h('div', { class: `rv-hand ${mine ? 'active' : ''}` },
+          nameLine(r, s, h('span', { class: 'muted small' }, teamOf(s) === userTeam ? ' · vous jouez ses cartes' : ' · solveur')),
+          h('div', { class: 'rv-cards' }, hand.map((c) => {
+            const el = cardEl(c, { class: `mini ${mine ? (legal.includes(c) ? 'pick' : 'dim') : ''}` });
+            if (mine && legal.includes(c)) {
+              el.addEventListener('click', () => {
+                if (busy || turnNow() !== s) return;
+                line.push({ seat: s, card: c });
+                render();
+                advance();
+              });
+            }
+            return el;
+          }))));
+      }
+    }
+
+    async function advance() {
+      while (alive && line.length < 32 && teamOf(turnNow()) !== userTeam) {
+        busy = true;
+        render();
+        let mv;
+        try {
+          mv = await solverMoveAsync(r, mySeat, trump, line, { capotTeam });
+        } catch (e) {
+          busy = false;
+          if (alive) { render(); toast(`Solveur indisponible : ${e.message}`); }
+          return;
+        }
+        if (!alive) return;
+        line.push({ seat: mv.seat, card: mv.card });
+        render();
+        await new Promise((res) => setTimeout(res, 350));
+      }
+      busy = false;
+      if (alive) render();
+    }
+
+    render();
+    advance();
+    return wrap;
   }
 
   /** La manche était-elle gagnable ? (min-max cartes sur table, dans le Worker) */

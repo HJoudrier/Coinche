@@ -575,3 +575,86 @@ export function bestScores(record, mySeat, trump, { nodeLimit = 4e6 } = {}) {
     ms: Date.now() - t0,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Partie optimale et coup du solveur (pour vérifier un score maximal)
+// ---------------------------------------------------------------------------
+
+/** Enregistrement fictif : atout `trump`, notre équipe (celle de mySeat) comme « preneurs ». */
+function scoreRecord(record, mySeat, trump, value = 80) {
+  return {
+    ...record,
+    contract: { seat: mySeat, team: teamOf(mySeat), value, trump, mult: 1 },
+    beloteTeam: null,
+  };
+}
+
+/**
+ * Coup joué par le solveur après `line` pour l'atout `trump` :
+ *  - capotTeam !== null : l'équipe capotTeam garde le capot si elle le peut (l'autre résiste au mieux) ;
+ *  - sinon min-max sur les points : notre équipe maximise ses points, l'autre les minimise.
+ * Renvoie {card, values} (valeur de chaque coup légal).
+ */
+export function solverMove(record, mySeat, trump, line, { capotTeam = null, nodeLimit = 4e6, solvers = null } = {}) {
+  const k = line.length;
+  const us = teamOf(mySeat);
+  const pointsSolver = (solvers && solvers.points) || createSolver(scoreRecord(record, mySeat, trump), { nodeLimit });
+  const seat = pointsSolver.turnAt(line, k);
+  const legal = pointsSolver.legalAt(line, k).cards;
+  const values = {};
+  for (const c of legal) {
+    pointsSolver.resetNodes();
+    values[c] = pointsSolver.maxTakerPointsAt([...line, { seat, card: c }], k + 1);
+  }
+  let candidates = legal.slice();
+  if (capotTeam !== null) {
+    const capotSolver = (solvers && solvers.capot)
+      || createSolver(scoreRecord(record, capotTeam === us ? mySeat : (mySeat + 1) % 4, trump, CAPOT), { nodeLimit });
+    if (teamOf(seat) === capotTeam) {
+      const keep = legal.filter((c) => capotSolver.takersWinAt([...line, { seat, card: c }], k + 1) === true);
+      if (keep.length) candidates = keep;
+    }
+  }
+  // min-max sur les points parmi les candidats ; à égalité, le choix naturel du robot
+  const maximize = teamOf(seat) === us;
+  const known = candidates.filter((c) => values[c] !== null);
+  const pool = known.length ? known : candidates;
+  const target = known.length
+    ? (maximize ? Math.max(...known.map((c) => values[c])) : Math.min(...known.map((c) => values[c])))
+    : null;
+  const best = target === null ? pool : pool.filter((c) => values[c] === target);
+  const done = stepsToTricks(line, trump);
+  const trick = line.slice(done.length * 4).map(({ seat: s, card }) => ({ seat: s, card }));
+  const hand = record.hands[seat].filter((c) => !line.some((x) => x.card === c));
+  const robot = heuristicPlay({ seat, hand, trick, tricks: done, contract: { seat: mySeat, team: us, value: 80, trump, mult: 1 } }).card;
+  return { seat, card: best.includes(robot) ? robot : best[0], values };
+}
+
+/** Solveurs réutilisables (tables de transposition partagées) pour un atout donné. */
+export function makeScoreSolvers(record, mySeat, trump, capotTeam = null) {
+  const us = teamOf(mySeat);
+  return {
+    points: createSolver(scoreRecord(record, mySeat, trump), { nodeLimit: 4e6 }),
+    capot: capotTeam === null ? null
+      : createSolver(scoreRecord(record, capotTeam === us ? mySeat : (mySeat + 1) % 4, trump, CAPOT), { nodeLimit: 4e6 }),
+  };
+}
+
+/** Partie optimale cartes sur table pour l'atout `trump` (les deux camps jouent le meilleur coup). */
+export function optimalLine(record, mySeat, trump, { capotTeam = null, solvers = null } = {}) {
+  const t0 = Date.now();
+  solvers = solvers || makeScoreSolvers(record, mySeat, trump, capotTeam);
+  const line = [];
+  for (let k = 0; k < 32; k++) {
+    const { seat, card } = solverMove(record, mySeat, trump, line, { capotTeam, solvers });
+    line.push({ seat, card });
+  }
+  const tricks = stepsToTricks(line, trump);
+  const cardPoints = [0, 0];
+  for (const t of tricks) cardPoints[teamOf(t.winner)] += t.points;
+  return {
+    record: { ...record, contract: { ...record.contract, trump }, tricks, cardPoints },
+    cardPoints,
+    ms: Date.now() - t0,
+  };
+}

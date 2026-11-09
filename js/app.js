@@ -1,6 +1,6 @@
 // Application : écrans, salon (places, QR code), partie solo / hôte / invité.
 import {
-  h, clear, toast, openModal, openPanel, confirmDialog, segmented,
+  h, clear, toast, openModal, openPanel, confirmDialog, segmented, preloadCardImages,
 } from './ui/dom.js';
 import { GameView } from './ui/game.js';
 import { statsBody } from './ui/statsview.js';
@@ -657,6 +657,7 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 onSettingsChange((st) => {
+  if (st.cardStyle === 'classic') preloadCardImages();
   if (session.host) {
     Object.assign(session.host.config, {
       aiLevel: st.aiLevel, bidTimer: st.bidTimer, playTimer: st.playTimer, robotSpeed: st.robotSpeed,
@@ -666,6 +667,7 @@ onSettingsChange((st) => {
 });
 
 // Démarrage
+if (getSettings().cardStyle === 'classic') preloadCardImages();
 const params = new URLSearchParams(location.search);
 const joinCode = params.get('join');
 if (joinCode) {

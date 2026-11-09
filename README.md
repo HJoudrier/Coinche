@@ -47,7 +47,12 @@ L'interface est pensée d'abord pour le téléphone.
 - **Revoir la donne** depuis le résumé de fin de manche ou les statistiques, pour chaque manche de la partie.
   On y trouve les mains de départ, les enchères avec leur signification, les 8 plis (qui entame, qui remporte, cumul des points) et un rejeu pas à pas sur la table, en manuel ou en lecture automatique.
 - **Statistiques** de la partie sur toutes les manches (courbe des scores, équipes, joueurs, atouts) et historique de toutes les parties jouées sur l'appareil.
-- **Page de paramétrage** : nom, niveau des robots, score à atteindre, vitesse des robots, aides, timers.
+- **Deux styles de cartes**, au choix dans les paramètres (aperçu en direct) :
+  - **Classique** (par défaut) : jeu traditionnel, avec les symboles disposés comme sur de vraies cartes (un grand symbole pour l'as, sept pour le 7…), les figures illustrées et la valeur dans les quatre coins ;
+  - **Lisible** : gros chiffres et grand symbole, pour lire les cartes d'un coup d'œil sur petit écran.
+
+  Les cartes du pli sont disposées en croix, sans se chevaucher.
+- **Page de paramétrage** : nom, niveau des robots, score à atteindre, vitesse des robots, aides, timers, style des cartes.
 - La partie solo est sauvegardée automatiquement et peut être reprise depuis l'accueil.
 
 ## Jouer
@@ -109,9 +114,15 @@ js/stats.js           statistiques et historique
 js/settings.js        paramètres
 js/ui/                interface (table de jeu, statistiques, paramètres)
 vendor/               PeerJS 1.5.5 et qrcode-generator 2.0.4 (licence MIT)
+vendor/cards/         cartes du style « Classique » (domaine public)
+tools/                génération des cartes classiques
 tests/                tests unitaires et simulations (node:test)
 ```
 
 ## Licence
 
 GPL-3.0 (voir `LICENSE`). Les bibliothèques du dossier `vendor/` sont sous licence MIT.
+
+Les cartes du style « Classique » (`vendor/cards/`) sont les dessins d'Adrian Kennard
+([www.me.uk/cards](https://www.me.uk/cards/)), placés dans le domaine public et distribués par le paquet npm
+`@letele/playing-cards` (CC0). Les index français et les as ont été adaptés par `tools/extract-cards.mjs` (voir `vendor/cards/LICENSE.txt`).

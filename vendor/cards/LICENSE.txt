@@ -1,0 +1,13 @@
+Cartes du style « Classique »
+
+Dessins : Adrian Kennard, « classic SVG playing cards » (https://www.me.uk/cards/),
+placés dans le domaine public. Fichiers obtenus à partir du paquet npm
+@letele/playing-cards, distribué sous licence CC0 1.0 Universal :
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Adaptations pour ce jeu (script tools/extract-cards.mjs) :
+- index français (V, D, R, A, 10, 9, 8, 7) dans les quatre coins, agrandis ;
+- as dessinés avec un grand symbole central ;
+- contour retiré (bordure et coins arrondis dessinés par la feuille de style).
+
+Ces adaptations sont, elles aussi, placées dans le domaine public (CC0 1.0).

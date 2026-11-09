@@ -50,7 +50,17 @@ export class GameView {
     this.gameOverNotified = null;
     this.timerRaf = null;
     this.root = this.build();
-    this.unsub = onSettingsChange(() => { this.advice = null; this.bidAdv = null; this.adviceSeq = null; this.bidAdvSeq = null; this.render(); });
+    this.cardStyle = getSettings().cardStyle;
+    this.unsub = onSettingsChange((st) => {
+      this.advice = null; this.bidAdv = null; this.adviceSeq = null; this.bidAdvSeq = null;
+      if (st.cardStyle !== this.cardStyle) {
+        // redessiner le pli dans le nouveau style
+        this.cardStyle = st.cardStyle;
+        this.trickKey = '';
+        clear(this.trickEl);
+      }
+      this.render();
+    });
   }
 
   destroy() {

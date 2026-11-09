@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   signaling: '', // serveur PeerJS personnalisé (vide = serveur public)
   counterCallFrom: 100, // contrat à partir duquel l'équipe preneuse joue en contre-appels (999 = jamais)
   mcSamples: 500, // donnes simulées par décision pour le niveau difficile et l'aide experte
+  cardStyle: 'classic', // classic (jeu traditionnel illustré) | readable (gros index)
 });
 
 export const OPTIONS = {
@@ -56,6 +57,10 @@ export const OPTIONS = {
     [250, '250'],
     [500, '500'],
     [1000, '1000'],
+  ],
+  cardStyle: [
+    ['classic', 'Classique'],
+    ['readable', 'Lisible'],
   ],
   robotSpeed: [
     ['slow', 'Lente'],

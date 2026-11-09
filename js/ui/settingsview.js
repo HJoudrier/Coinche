@@ -1,5 +1,5 @@
 // Page de paramétrage : niveau de jeu, aides, temps limités, score cible…
-import { h, segmented } from './dom.js';
+import { h, segmented, cardEl, clear } from './dom.js';
 import { getSettings, updateSettings, OPTIONS, DEFAULT_SETTINGS } from '../settings.js';
 import { HELP_DESCRIPTIONS } from '../advisor.js';
 import { CONVENTION_SUMMARY } from '../bidding.js';
@@ -63,6 +63,23 @@ export function settingsBody(ctx = {}) {
     field('Contre-appels de l\'équipe preneuse', ccSelect,
       'Lors d\'une défausse, la première petite carte est un signal. Appel direct : « joue cette couleur, j\'en ai l\'as ». Contre-appel : « je n\'ai rien ici, joue ailleurs ». La défense appelle toujours directement.',
       guestNote));
+
+  const CARD_DESC = {
+    classic: 'Jeu traditionnel : symboles disposés comme sur de vraies cartes, figures illustrées, valeur dans les quatre coins.',
+    readable: 'Gros chiffres et grand symbole, pour lire les cartes d\'un coup d\'œil sur petit écran.',
+  };
+  const preview = h('div', { class: 'card-preview', 'aria-hidden': 'true' });
+  const cardDesc = descEl(CARD_DESC[st.cardStyle]);
+  const showPreview = (style) => {
+    clear(preview);
+    for (const c of ['AH', 'TS', 'KD', 'JC']) preview.append(cardEl(c, { style }));
+    cardDesc.textContent = CARD_DESC[style];
+  };
+  showPreview(st.cardStyle);
+  body.append(h('h3', null, 'Apparence'),
+    h('div', { class: 'field' }, h('label', null, 'Style des cartes'),
+      segmented(OPTIONS.cardStyle, st.cardStyle, (v) => { updateSettings({ cardStyle: v }); showPreview(v); }),
+      cardDesc, preview));
 
   body.append(h('h3', null, 'Confort'),
     h('label', { class: 'switch' },

@@ -1,5 +1,6 @@
 // Petits utilitaires DOM.
-import { suitOf, rankOf, isRed, RANK_LABEL, SUIT_SYMBOL } from '../cards.js';
+import { suitOf, rankOf, isRed, RANK_LABEL, SUIT_SYMBOL, SUITS, RANKS } from '../cards.js';
+import { getSettings } from '../settings.js';
 
 export function h(tag, props, ...children) {
   const el = document.createElement(tag);
@@ -49,21 +50,47 @@ export function toast(msg, ms = 2400) {
   toastTimer = setTimeout(() => el.classList.remove('show'), ms);
 }
 
-/** Élément carte. */
+/** Image du style « Classique » (jeu d'Adrian Kennard, domaine public, index français). */
+export const cardImage = (card) => `vendor/cards/${card}.svg`;
+
+const preloaded = [];
+/** Charge à l'avance les 32 images pour éviter un affichage vide à la première apparition. */
+export function preloadCardImages() {
+  if (preloaded.length) return;
+  for (const s of SUITS) {
+    for (const r of RANKS) {
+      const img = new Image();
+      img.src = cardImage(r + s);
+      preloaded.push(img);
+    }
+  }
+}
+
+/**
+ * Élément carte.
+ * Style « Classique » : image complète (symboles disposés comme sur un vrai jeu, figures illustrées,
+ * index dans les quatre coins). Style « Lisible » : gros index, grand symbole et index retourné en bas.
+ * Les mini-cartes (revue de la donne) gardent l'index seul, plus lisible à 36 pixels.
+ */
 export function cardEl(card, opts = {}) {
   if (!card || opts.back) return h('div', { class: `card back ${opts.class || ''}` });
   const s = suitOf(card);
   const r = rankOf(card);
   const face = ['J', 'Q', 'K'].includes(r);
-  return h('div', {
-    class: `card ${isRed(s) ? 'red' : 'black'} ${face ? 'face' : ''} ${opts.class || ''}`,
+  const mini = /(^|\s)mini(\s|$)/.test(opts.class || '');
+  const style = mini ? 'mini' : (opts.style || getSettings().cardStyle || 'classic');
+  const props = {
+    class: `card ${isRed(s) ? 'red' : 'black'} ${face ? 'face' : ''} ${style === 'classic' ? 'classic' : ''} ${opts.class || ''}`,
     dataset: { card },
     role: opts.button ? 'button' : null,
     'aria-label': cardName(card),
-  },
-  h('span', { class: 'rk' }, RANK_LABEL[r]),
-  h('span', { class: 'st' }, SUIT_SYMBOL[s]),
-  h('span', { class: 'big' }, face ? RANK_LABEL[r] : SUIT_SYMBOL[s]));
+  };
+  if (style === 'classic') {
+    return h('div', props, h('img', { class: 'face-img', src: cardImage(card), alt: '', draggable: 'false' }));
+  }
+  const index = (cls) => h('span', { class: cls }, h('span', { class: 'rk' }, RANK_LABEL[r]), h('span', { class: 'st' }, SUIT_SYMBOL[s]));
+  if (style === 'mini') return h('div', props, index('idx'), h('span', { class: 'big' }, face ? RANK_LABEL[r] : SUIT_SYMBOL[s]));
+  return h('div', props, index('idx'), index('idx idx-br'), h('span', { class: 'big' }, face ? RANK_LABEL[r] : SUIT_SYMBOL[s]));
 }
 
 const RANK_FULL = { '7': 'Sept', '8': 'Huit', '9': 'Neuf', T: 'Dix', J: 'Valet', Q: 'Dame', K: 'Roi', A: 'As' };

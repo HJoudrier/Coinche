@@ -114,6 +114,7 @@ h3 { font-size: 1rem; margin: 22px 0 10px; color: var(--text-2); text-transform:
 /* ------------------------------------------------------------ formulaires */
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 .field > label { font-weight: 600; }
+.card-preview { display: flex; gap: 8px; flex-wrap: wrap; --cw: 64px; --ch: 91px; padding: 4px 0; }
 .desc { font-size: 0.85rem; color: var(--muted); }
 .note { font-size: 0.8rem; color: var(--accent); opacity: 0.85; }
 input[type="text"], input:not([type]), select {
@@ -188,16 +189,25 @@ ul.plain { list-style: none; padding: 0; }
   border: 1px solid rgba(0, 0, 0, 0.18);
 }
 .card.red { color: var(--card-red); }
-.card .rk {
-  position: absolute; top: 3%; left: 6%; font-weight: 800; letter-spacing: -0.04em;
-  font-size: calc(var(--cw) * 0.34); line-height: 1;
-}
-.card .st { position: absolute; top: calc(var(--cw) * 0.36); left: 7%; font-size: calc(var(--cw) * 0.3); line-height: 1; }
+/* style « Lisible » (et mini-cartes) : gros index en haut à gauche, index retourné en bas à droite */
+.card .idx { position: absolute; top: 3%; left: 5%; display: flex; flex-direction: column; align-items: center; line-height: 1; }
+.card .rk { font-weight: 800; letter-spacing: -0.04em; font-size: calc(var(--cw) * 0.34); }
+.card .st { font-size: calc(var(--cw) * 0.3); margin-top: calc(var(--cw) * 0.02); }
+.card .idx-br { top: auto; left: auto; bottom: 3%; right: 5%; transform: rotate(180deg); }
+.card .idx-br .rk { font-size: calc(var(--cw) * 0.24); }
+.card .idx-br .st { font-size: calc(var(--cw) * 0.2); margin-top: 0; }
 .card .big {
-  position: absolute; left: 50%; bottom: 6%; transform: translateX(-50%);
+  position: absolute; left: 40%; bottom: 6%; transform: translateX(-50%);
   font-size: calc(var(--cw) * 0.6); line-height: 1; opacity: 0.92;
 }
 .hand .card .big { left: 33%; }
+.card.mini .big { left: 50%; }
+/* style « Classique » : image complète, index dans les quatre coins */
+.card.classic { overflow: hidden; }
+.card.classic .face-img {
+  display: block; width: 100%; height: 100%; pointer-events: none;
+  -webkit-user-drag: none; user-select: none; -webkit-user-select: none;
+}
 .card.face .big { font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: calc(var(--cw) * 0.48); bottom: 9%; }
 .card.back {
   background: repeating-linear-gradient(45deg, #9f2834 0 4px, #b8323f 4px 8px);
@@ -315,10 +325,11 @@ ul.plain { list-style: none; padding: 0; }
   transform: translate(-50%, -50%) translate(var(--x), var(--y)) rotate(var(--r));
   transition: transform 0.42s ease-in, opacity 0.42s ease-in;
 }
-.trick .card.pos-0 { --x: 0px; --y: calc(var(--th) * 0.42); --r: -2deg; --fx: 0px; --fy: 60vh; z-index: 1; }
-.trick .card.pos-1 { --x: calc(var(--tw) * 0.72); --y: 0px; --r: 6deg; --fx: 50vw; --fy: 0px; }
-.trick .card.pos-2 { --x: 0px; --y: calc(var(--th) * -0.42); --r: 2deg; --fx: 0px; --fy: -40vh; }
-.trick .card.pos-3 { --x: calc(var(--tw) * -0.72); --y: 0px; --r: -6deg; --fx: -50vw; --fy: 0px; }
+/* pli en croix, sans chevauchement : chaque carte reste entièrement visible */
+.trick .card.pos-0 { --x: 0px; --y: calc(var(--th) * 0.56); --r: -2deg; --fx: 0px; --fy: 60vh; z-index: 1; }
+.trick .card.pos-1 { --x: calc(var(--tw) * 1.08); --y: 0px; --r: 4deg; --fx: 50vw; --fy: 0px; }
+.trick .card.pos-2 { --x: 0px; --y: calc(var(--th) * -0.56); --r: 2deg; --fx: 0px; --fy: -40vh; }
+.trick .card.pos-3 { --x: calc(var(--tw) * -1.08); --y: 0px; --r: -4deg; --fx: -50vw; --fy: 0px; }
 .trick .card.enter { animation: deal-in 0.28s ease-out; }
 @keyframes deal-in {
   from { transform: translate(-50%, -50%) translate(var(--fx), var(--fy)) rotate(0deg); opacity: 0.3; }
@@ -539,10 +550,12 @@ details.hands { font-size: 0.88rem; }
   .bidpanel { border-radius: 16px; margin: 0 8px 8px; }
 }
 @media (max-height: 560px) and (orientation: landscape) {
-  :root { --cw: min(9vw, 14vh, 80px); }
+  :root { --cw: min(9vw, 14vh, 80px); --tw: calc(var(--cw) * 0.92); }
   .topbar { min-height: 42px; padding-top: 2px; padding-bottom: 2px; }
   .table { min-height: 90px; }
-  .seat.top { top: 2px; }
+  /* place du haut sur une ligne, pli un peu plus bas : la croix du pli tient sous l'avatar */
+  .seat.top { top: 4px; flex-direction: row; gap: 6px; width: auto; }
+  .trick { top: 55%; }
   .seat.left, .seat.right { top: 34%; }
   .avatar { width: 38px; height: 38px; font-size: 1rem; }
   .avatar .ring { -webkit-mask: radial-gradient(circle, transparent 23px, #000 24px); mask: radial-gradient(circle, transparent 23px, #000 24px); }

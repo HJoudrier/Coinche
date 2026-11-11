@@ -15,13 +15,15 @@ import {
 import { HELP_DESCRIPTIONS } from './advisor.js';
 import { saveFinishedGame } from './stats.js';
 import qrcode from '../vendor/qrcode.mjs';
+import {
+  SEAT_LABELS, lobbyFreeSeats, gameFreeSeats, placement, lobbyTable, gameTable, partnerOf,
+} from './lobby.js';
 
 const app = document.getElementById('app');
 const SAVE_KEY = 'coinche.saved.v1';
 const TOKEN_KEY = 'coinche.token';
 const GUEST_KEY = 'coinche.guest.v1'; // partie en ligne rejointe : {code, at}, pour y revenir après un rechargement
 const GUEST_MAX_AGE = 3 * 3600 * 1000;
-const SEAT_LABELS = ['Sud', 'Est', 'Nord', 'Ouest'];
 const ROLE = ['vous', 'adversaire', 'partenaire', 'adversaire'];
 
 const session = {
@@ -32,6 +34,7 @@ const session = {
   game: null,
   lobby: null,
   conns: {},
+  pending: new Map(), // invités connectés qui n'ont pas encore choisi leur place : jeton → {conn, name, token}
   reaper: null,
   guestCode: null,
   wakeLock: null,
@@ -129,6 +132,8 @@ function teardown() {
   session.lobby = null;
   session.mode = null;
   session.conns = {};
+  session.pending.clear();
+  session.guestTable = null;
   releaseWakeLock();
   closeOverlays();
 }
@@ -207,7 +212,8 @@ function openHelpQuick() {
 function showLobby() {
   teardown();
   session.mode = 'lobby';
-  session.lobby = { kinds: ['local', 'robot', 'robot', 'robot'], guests: {}, code: null, opening: false, error: null };
+  // last : dernière place de chaque invité (jeton → place), rendue s'il se reconnecte
+  session.lobby = { kinds: ['local', 'robot', 'robot', 'robot'], guests: {}, last: {}, code: null, opening: false, error: null };
   setScreen(h('div', { class: 'screen lobby' }));
   renderLobby();
 }
@@ -236,6 +242,10 @@ function renderLobby() {
   rows.append(h('div', { class: 'seat-row me' },
     h('div', { class: 'sr-info' }, h('b', null, 'Sud'), h('span', { class: 'muted small' }, ` · vous (${st.playerName})`))));
   root.append(rows);
+  if (session.pending.size) {
+    root.append(h('div', { class: 'pending-guests' }, [...session.pending.values()].map((p) =>
+      h('div', { class: 'sr-status ok' }, `✓ ${p.name} est connecté et choisit sa place…`))));
+  }
 
   if (L.kinds.includes('remote')) {
     if (L.error) {
@@ -264,16 +274,19 @@ function setSeatKind(seat, kind) {
   L.kinds[seat] = kind;
   if (kind === 'robot' && L.guests[seat]) {
     const g = L.guests[seat];
-    session.hostNet.send(g.conn, { t: 'kicked' });
     delete L.guests[seat];
-    // proposer à l'invité une autre place réservée libre
-    const free = [2, 1, 3].find((s) => L.kinds[s] === 'remote' && !L.guests[s]);
-    if (free !== undefined) { L.guests[free] = g; g.conn.seat = free; session.hostNet.send(g.conn, { t: 'welcome', seat: free }); }
-    else setTimeout(() => { try { g.conn.close(); } catch { /* ignore */ } }, 300);
+    delete L.last[g.token];
+    g.conn.seat = undefined;
+    session.hostNet.send(g.conn, { t: 'kicked' });
+    // une seule autre place libre : il s'y assoit ; plusieurs (ou aucune) : il choisit
+    const p = placement(lobbyFreeSeats(L));
+    if (p.seat !== undefined) seatGuest(g.conn, g.name, g.token, p.seat, { announce: false });
+    else session.pending.set(g.token, g);
   }
   if (kind === 'remote') ensureRoom();
+  settleSeats();
   renderLobby();
-  broadcastLobby();
+  broadcastTable();
 }
 
 async function ensureRoom() {
@@ -338,6 +351,7 @@ function inviteBox(code) {
 function onHostMessage(conn, msg) {
   if (!msg || typeof msg !== 'object') return;
   if (msg.t === 'hello') { onHello(conn, msg); return; }
+  if (msg.t === 'sit') { onSit(conn, msg); return; }
   if (msg.t === 'presence') {
     // l'invité a caché ou réaffiché sa page
     if (session.host && conn.seat !== undefined && session.conns[conn.seat] === conn) session.host.setAway(conn.seat, !!msg.away);
@@ -349,16 +363,51 @@ function onHostMessage(conn, msg) {
   }
 }
 
+/** Places qu'un invité peut prendre maintenant : celles du salon, ou, partie lancée, celles tenues par un robot. */
+function freeSeatsNow() {
+  if (session.host) return gameFreeSeats(session.host.seats);
+  if (session.lobby) return lobbyFreeSeats(session.lobby);
+  return [];
+}
+
+function refuseGuest(conn) {
+  session.hostNet.send(conn, { t: 'full' });
+  setTimeout(() => { try { conn.close(); } catch { /* ignore */ } }, 300);
+}
+
 function onHello(conn, msg) {
-  const net = session.hostNet;
   const name = cleanName(msg.name) || 'Invité';
   const token = String(msg.token || '').slice(0, 40);
+  conn.token = token;
+  const L = session.lobby;
+  if (session.host) {
+    // il retrouve sa place grâce à son jeton ; sinon il arrive comme nouveau venu
+    const seat = session.host.seats.findIndex((s) => s.kind === 'remote' && s.token === token);
+    if (seat >= 0) { seatGuest(conn, name, token, seat, { announce: false }); return; }
+  } else if (L) {
+    const seat = Object.keys(L.guests).map(Number).find((s) => L.guests[s].token === token);
+    if (seat !== undefined) { seatGuest(conn, name, token, seat, { announce: false }); return; }
+  } else { refuseGuest(conn); return; }
+  // nouveau venu : une seule place libre (ou celle qu'il vient de quitter) et il s'y assoit,
+  // sinon il voit la table et choisit parmi les places libres
+  const old = session.pending.get(token);
+  if (old && old.conn !== conn) { try { old.conn.close(); } catch { /* ignore */ } }
+  session.pending.delete(token);
+  const p = placement(freeSeatsNow(), L ? L.last[token] : undefined);
+  if (p.full) { refuseGuest(conn); return; }
+  if (p.seat !== undefined) { seatGuest(conn, name, token, p.seat); return; }
+  session.pending.set(token, { conn, name, token });
+  conn.seat = undefined;
+  if (L) renderLobby();
+  broadcastTable();
+}
+
+/** Assoit un invité à `seat` (salon ou partie en cours) et le prévient. */
+function seatGuest(conn, name, token, seat, { announce = true } = {}) {
+  const net = session.hostNet;
+  session.pending.delete(token);
   if (session.host) {
     const seats = session.host.seats;
-    let seat = seats.findIndex((s) => s.kind === 'remote' && s.token === token);
-    // un nouveau venu ne prend jamais la place d'un absent, seulement une place laissée à un robot
-    if (seat < 0) seat = seats.findIndex((s) => s.kind === 'remote' && s.standIn && !s.connected);
-    if (seat < 0) { net.send(conn, { t: 'full' }); setTimeout(() => conn.close(), 300); return; }
     const old = session.conns[seat];
     if (old && old !== conn) { try { old.close(); } catch { /* ignore */ } }
     session.conns[seat] = conn;
@@ -373,22 +422,69 @@ function onHello(conn, msg) {
     return;
   }
   const L = session.lobby;
-  if (!L) { net.send(conn, { t: 'full' }); return; }
-  let seat = Object.keys(L.guests).map(Number).find((s) => L.guests[s].token === token);
-  if (seat === undefined) seat = [2, 1, 3].find((s) => L.kinds[s] === 'remote' && !L.guests[s]);
-  if (seat === undefined) { net.send(conn, { t: 'full' }); setTimeout(() => conn.close(), 300); return; }
   const prev = L.guests[seat];
   if (prev && prev.conn !== conn) { try { prev.conn.close(); } catch { /* ignore */ } }
   L.guests[seat] = { conn, name, token };
+  L.last[token] = seat;
   conn.seat = seat;
   net.send(conn, { t: 'welcome', seat });
-  if (!prev) toast(`${name} a rejoint la table (${SEAT_LABELS[seat]})`);
+  if (!prev && announce) toast(`${name} a rejoint la table (${SEAT_LABELS[seat]})`);
   renderLobby();
-  broadcastLobby();
+  broadcastTable();
+}
+
+/** Un invité choisit sa place (ou en change, tant que la partie n'est pas lancée). */
+function onSit(conn, msg) {
+  const net = session.hostNet;
+  const seat = Number(msg.seat);
+  const token = conn.token;
+  if (!net || !token || !Number.isInteger(seat)) return;
+  const pend = session.pending.get(token);
+  const waiting = pend && pend.conn === conn;
+  let name;
+  if (waiting) name = pend.name;
+  else if (conn.seat !== undefined && session.lobby) {
+    const g = session.lobby.guests[conn.seat];
+    if (!g || g.conn !== conn) return;
+    name = g.name;
+  } else return; // partie lancée : on ne change plus de place
+  if (conn.seat === seat) return;
+  if (!freeSeatsNow().includes(seat)) {
+    net.send(conn, { t: 'error', message: 'Cette place vient d\'être prise.' });
+    broadcastTable();
+    return;
+  }
+  if (!waiting) delete session.lobby.guests[conn.seat];
+  seatGuest(conn, name, token, seat, { announce: waiting });
+  settleSeats();
+}
+
+/**
+ * Les invités en attente de choix n'ont plus à choisir quand il ne reste qu'une place : on les y assoit.
+ * Partie lancée, s'il n'en reste aucune, la table est complète pour eux.
+ */
+function settleSeats() {
+  if (!session.pending.size) return;
+  const free = freeSeatsNow();
+  if (free.length === 1) {
+    const next = session.pending.values().next().value;
+    seatGuest(next.conn, next.name, next.token, free[0]);
+  } else if (!free.length && session.host) {
+    for (const p of session.pending.values()) refuseGuest(p.conn);
+    session.pending.clear();
+  }
 }
 
 function onHostDisconnect(conn) {
-  if (conn.seat === undefined) return;
+  if (conn.seat === undefined) {
+    // invité qui n'avait pas encore choisi sa place
+    const p = conn.token && session.pending.get(conn.token);
+    if (p && p.conn === conn) {
+      session.pending.delete(conn.token);
+      if (session.lobby) renderLobby();
+    }
+    return;
+  }
   if (session.host) {
     if (session.conns[conn.seat] === conn) {
       delete session.conns[conn.seat];
@@ -400,30 +496,32 @@ function onHostDisconnect(conn) {
     if (g && g.conn === conn) {
       delete session.lobby.guests[conn.seat];
       toast(`${g.name} a quitté la table`);
+      settleSeats();
       renderLobby();
-      broadcastLobby();
+      broadcastTable();
     }
   }
 }
 
-function broadcastLobby() {
+/** Envoie à chaque invité la table (qui est où, quelles places sont libres) : à ceux qui choisissent, et dans le salon à ceux déjà assis. */
+function broadcastTable() {
+  const net = session.hostNet;
+  if (!net) return;
   const L = session.lobby;
-  if (!L || !session.hostNet) return;
-  const st = getSettings();
-  const seats = [0, 1, 2, 3].map((s) => ({
-    label: SEAT_LABELS[s],
-    kind: L.kinds[s] === 'local' ? 'host' : L.kinds[s],
-    name: s === 0 ? st.playerName : L.kinds[s] === 'remote' ? (L.guests[s] ? L.guests[s].name : null) : 'Robot',
-  }));
-  for (const s of Object.keys(L.guests)) session.hostNet.send(L.guests[s].conn, { t: 'lobby', seats, you: Number(s) });
+  const table = session.host ? gameTable(session.host.seats) : L ? lobbyTable(L, getSettings().playerName) : null;
+  if (!table) return;
+  if (L) for (const s of Object.keys(L.guests)) net.send(L.guests[s].conn, { t: 'lobby', seats: table, you: Number(s) });
+  for (const p of session.pending.values()) net.send(p.conn, { t: 'lobby', seats: table, you: null });
 }
 
 async function startFromLobby() {
   const L = session.lobby;
   const st = getSettings();
-  const empty = [1, 2, 3].filter((s) => L.kinds[s] === 'remote' && !L.guests[s]);
+  const empty = lobbyFreeSeats(L);
   if (empty.length) {
-    const ok = await confirmDialog(`${empty.length > 1 ? 'Des places invitées sont libres : elles seront tenues' : 'Une place invitée est libre : elle sera tenue'} par un robot. Lancer quand même ?`, { ok: 'Lancer' });
+    const wait = [...session.pending.values()].map((p) => p.name);
+    const note = wait.length ? ` ${wait.join(', ')} n'${wait.length > 1 ? 'ont' : 'a'} pas encore choisi ${wait.length > 1 ? 'leur place' : 'sa place'} et ne pourr${wait.length > 1 ? 'ont' : 'a'} pas jouer.` : '';
+    const ok = await confirmDialog(`${empty.length > 1 ? 'Des places invitées sont libres : elles seront tenues' : 'Une place invitée est libre : elle sera tenue'} par un robot.${note} Lancer quand même ?`, { ok: 'Lancer' });
     if (!ok || session.lobby !== L) return;
   }
   const seats = [0, 1, 2, 3].map((s) => {
@@ -435,6 +533,9 @@ async function startFromLobby() {
   for (const s of Object.keys(L.guests)) session.conns[s] = L.guests[s].conn;
   const online = seats.some((s) => s.kind === 'remote');
   session.lobby = null;
+  // ceux qui n'ont pas choisi de place restent à la porte : la table est complète
+  if (session.hostNet) for (const p of session.pending.values()) refuseGuest(p.conn);
+  session.pending.clear();
   if (!online && session.hostNet) {
     session.hostNet.close();
     session.hostNet = null;
@@ -456,6 +557,7 @@ function startHostGame({ seats, online, saved = null }) {
     host.setAway(0, document.visibilityState === 'hidden');
   }
   host.onChange = (hh) => {
+    if (session.pending.size) { settleSeats(); broadcastTable(); }
     if (session.mode === 'solo') {
       if (hh.state.phase === 'gameOver') safeSet(SAVE_KEY, 'null');
       else safeSet(SAVE_KEY, JSON.stringify(hh.toJSON()));
@@ -548,7 +650,7 @@ function showInviteModal() {
   const seats = session.host.seats;
   const m = openModal([
     h('h3', null, 'Inviter'),
-    h('p', { class: 'muted small' }, 'Un joueur peut reprendre une place invitée laissée libre ou déconnectée.'),
+    h('p', { class: 'muted small' }, 'Un joueur peut reprendre sa place, ou choisir une place invitée tenue par un robot (il voit alors qui est installé où).'),
     inviteBox(net.code),
     h('ul', { class: 'plain' }, seats.map((s, i) => (s.kind === 'remote'
       ? h('li', null, `${SEAT_LABELS[i]} : ${s.name} ${s.connected ? '✓ connecté' : '— hors ligne'}`) : null))),
@@ -615,6 +717,7 @@ async function connectGuest(code) {
   await net.connect(code);
   if (session.guestNet) session.guestNet.close();
   session.guestNet = net;
+  session.guestTable = null;
   session.mode = 'guest';
   session.guestCode = code;
   rememberGuest(code);
@@ -634,9 +737,10 @@ function onGuestMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
   switch (msg.t) {
     case 'welcome':
-      if (!session.game) showGuestWaiting(null, msg.seat);
+      if (!session.game) showGuestWaiting(session.guestTable || null, msg.seat);
       break;
     case 'lobby':
+      session.guestTable = msg.seats;
       if (!session.game) showGuestWaiting(msg.seats, msg.you);
       break;
     case 'view':
@@ -668,17 +772,58 @@ function onGuestMessage(msg) {
   }
 }
 
-function showGuestWaiting(seats, you) {
-  const box = h('div', { class: 'screen waiting' },
+/**
+ * Salle d'attente de l'invité : la table vue de dessus, avec les joueurs déjà installés.
+ * Il touche une place libre pour s'y asseoir (ou en changer, tant que la partie n'est pas lancée).
+ * @param {Array|null} table places de la table (voir lobby.js) ; null si l'hôte ne l'a pas encore envoyée
+ * @param {number|null} you sa place, null tant qu'il n'a pas choisi
+ */
+function showGuestWaiting(table, you) {
+  const sit = (seat) => session.guestNet && session.guestNet.send({ t: 'sit', seat });
+  const seated = you !== null && you !== undefined;
+  const cell = (seat) => {
+    const s = table[seat];
+    const mine = seat === you;
+    const who = partnerOf(table, seat);
+    const team = who.kind === 'none' ? null : h('span', { class: 'sc-team' }, `avec ${who.text}`);
+    let body;
+    if (s.free) {
+      body = [
+        h('span', { class: 'sc-name' }, 'Place libre'),
+        s.replaced ? h('span', { class: 'sc-team' }, `celle de ${s.name}, tenue par un robot`) : null,
+        team,
+        h('span', { class: 'sc-act' }, seated ? 'Changer pour ici' : 'S\'asseoir ici'),
+      ];
+    } else {
+      const icon = s.kind === 'robot' ? '🤖' : '👤';
+      body = [
+        h('span', { class: 'sc-name' }, `${icon} ${mine ? 'Vous' : s.name || 'Joueur'}`),
+        mine ? h('span', { class: 'sc-team' }, s.name) : null,
+        team,
+      ];
+    }
+    const cls = `seat-cell pos-${seat} ${s.free ? 'free' : 'taken'} ${mine ? 'me' : ''}`;
+    const label = h('span', { class: 'sc-label' }, s.kind === 'host' ? `${s.label} · hôte` : s.label);
+    return s.free
+      ? h('button', { class: cls, onClick: () => sit(seat), 'aria-label': `${s.label} : place libre` }, label, body)
+      : h('div', { class: cls }, label, body);
+  };
+  const free = table ? table.filter((s) => s.free) : [];
+  const intro = seated
+    ? `Vous êtes assis en ${SEAT_LABELS[you]}${you === 2 ? ' : partenaire de l\'hôte' : you === 1 || you === 3 ? ' : adversaire de l\'hôte' : ''}.`
+    : table ? 'Choisissez votre place à la table.' : 'Vous avez rejoint la table.';
+  const hint = !table ? null
+    : !seated && !free.length ? 'Aucune place libre pour l\'instant : l\'hôte peut en libérer une.'
+      : seated && free.length ? 'Vous pouvez changer de place en touchant une place libre.' : null;
+  setScreen(h('div', { class: 'screen waiting' },
     h('div', { class: 'screen-head' },
       h('button', { class: 'icon-btn', 'aria-label': 'Quitter', onClick: showHome }, '←'),
-      h('h2', null, 'Table rejointe')),
-    h('p', null, `Vous êtes assis en ${SEAT_LABELS[you] || '…'}${you === 2 ? ' : partenaire de l\'hôte' : you === 1 || you === 3 ? ' : adversaire de l\'hôte' : ''}.`),
-    seats ? h('ul', { class: 'plain seats-list' }, seats.map((s, i) => h('li', { class: i === you ? 'me' : '' },
-      h('b', null, s.label), ' — ', s.kind === 'robot' ? '🤖 Robot' : s.name ? `👤 ${s.name}` : 'en attente…'))) : null,
-    h('div', { class: 'spinner' }),
-    h('p', { class: 'muted center' }, 'En attente du lancement de la partie par l\'hôte…'));
-  setScreen(box);
+      h('h2', null, seated || !table ? 'Table rejointe' : 'Rejoindre la table')),
+    h('p', null, intro),
+    table ? h('div', { class: 'seat-table' }, [2, 3, 1, 0].map(cell)) : null,
+    hint ? h('p', { class: 'muted small center' }, hint) : null,
+    seated || !table ? h('div', { class: 'spinner' }) : null,
+    seated || !table ? h('p', { class: 'muted center' }, 'En attente du lancement de la partie par l\'hôte…') : null));
 }
 
 let reconnecting = false;

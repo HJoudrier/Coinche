@@ -31,6 +31,8 @@ L'interface est pensée d'abord pour le téléphone.
   Au jeu de la carte, le robot difficile ne simule que des donnes compatibles avec les annonces. L'aide affiche « ce que l'on sait des mains ».
   À partir de l'aide « Intermédiaire », toucher une bulle d'annonce en donne la signification.
 - **Partie en ligne** : chaque place peut être tenue par un robot ou réservée à un invité. L'invité scanne le QR code ou saisit le code de la partie.
+  - Un invité qui arrive **choisit sa place** parmi les places libres : il voit la table vue de dessus, avec les joueurs déjà installés, les robots et, pour chaque place libre, son futur partenaire.
+    Il peut en changer tant que la partie n'est pas lancée ; s'il ne reste qu'une place libre, il s'y assoit tout seul, et s'il se reconnecte il retrouve la sienne.
   - Un joueur qui ouvre une autre page, change d'application ou perd le réseau **garde sa place** : il apparaît « absent » et la table l'attend.
     Les joueurs présents peuvent décider de **faire jouer un robot** à sa place jusqu'à son retour.
   - À son retour, il se **reconnecte tout seul**, même si la page a été rechargée. L'accueil propose aussi de revenir à la partie en cours.
